@@ -65,6 +65,57 @@ python -m research_sim.bot.app
 `http://127.0.0.1:8000/health`; интерактивная документация доступна на
 `http://127.0.0.1:8000/docs`.
 
+## Развёртывание из GitHub через PM2
+
+На Ubuntu/Debian-сервере один раз установите системные инструменты и клонируйте
+репозиторий по SSH (подставьте его URL):
+
+```bash
+sudo apt update
+sudo apt install -y git python3 python3-venv python3-pip nodejs npm
+git clone git@github.com:OWNER/REPOSITORY.git
+cd REPOSITORY
+./deploy.sh
+```
+
+При первом запуске скрипт создаст venv, установит Python- и PM2-зависимости,
+спросит недостающие настройки и сохранит их в закрытый `.env`. Токены вводятся
+без отображения в терминале, `API_TOKEN` скрипт генерирует сам. Перед запуском
+понадобятся `CONTROL_BOT_TOKEN` из `@BotFather`, ваш numeric admin ID,
+`TELEGRAM_API_ID`/`TELEGRAM_API_HASH` с `my.telegram.org` и username центрального
+тестового аккаунта. LLM API key можно пропустить. Затем скрипт запускает два
+процесса из `ecosystem.config.cjs` под PM2. Для проверки:
+
+```bash
+pm2 status
+pm2 logs telegram-research-api --lines 50
+pm2 logs telegram-research-bot --lines 50
+curl http://127.0.0.1:8000/health
+```
+
+Чтобы процессы восстановились после перезагрузки сервера, выполните `pm2
+startup`, запустите команду, которую PM2 напечатает для вашей системы, затем:
+
+```bash
+pm2 save
+```
+
+При следующих обновлениях достаточно снова запустить тот же скрипт из каталога
+репозитория: он выполнит fast-forward `git pull`, обновит зависимости и
+перезапустит процессы:
+
+```bash
+./deploy.sh
+```
+
+API в конфигурации слушает только `127.0.0.1`; наружу его публиковать не нужно
+для работы бота на том же сервере. Для быстрого теста откройте бота, отправьте
+`/start`, затем `/whoami` и убедитесь, что ID есть в `CONTROL_ADMIN_IDS`.
+
+Меню можно проверить до подготовки Telethon-сессий. Для отправки создайте
+авторизованные файлы `<account_key>.session` в `TELEGRAM_SESSION_DIR`, затем
+зарегистрируйте ключ через `/add_account`. Не кладите `.env` и `.session` в Git.
+
 API слушает только локальный интерфейс по умолчанию. Для каждого аккаунта нужна
 авторизованная Telethon-сессия. Сессии должны лежать вне репозитория в
 `TELEGRAM_SESSION_DIR`; файлы и API-токен не публикуйте. Файлы `.session` от
@@ -195,17 +246,13 @@ curl -X PUT http://127.0.0.1:8000/api/v1/settings/campaign \
 История и статусы показывают время по Москве (`Europe/Moscow`). Расписание
 обрабатывается автоматически, пока запущен процесс бота.
 
-Создайте отдельного Telegram-бота через BotFather. В отдельном терминале
-задайте те же `API_TOKEN`, адрес API, центрального получателя и каталог сессий,
-а также токен бота:
+Создайте отдельного Telegram-бота через `@BotFather` и заполните его токен,
+`CONTROL_ADMIN_IDS` и остальные значения в корневом `.env`. API и бот читают
+один и тот же файл, поэтому не задавайте для бота повторные `export`-значения:
+они имеют приоритет над `.env` и могут подменить реальные параметры.
 
 ```bash
-export CONTROL_BOT_TOKEN="token-from-botfather"
-export CONTROL_ADMIN_IDS="123456789"
-export API_TOKEN="same-api-token-as-the-api"
-export API_BASE_URL="http://127.0.0.1:8000"
-export TELEGRAM_ALLOWED_RECIPIENTS="partner_username"
-export TELEGRAM_SESSION_DIR="$HOME/.telegram-research-simulator/sessions"
+source .venv/bin/activate
 python -m research_sim.bot.app
 ```
 
