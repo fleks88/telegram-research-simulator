@@ -39,12 +39,13 @@ from __future__ import annotations
 import getpass
 import re
 import secrets
+import sys
 from pathlib import Path
 
 from dotenv import dotenv_values, set_key
 
 env_path = Path(".env")
-terminal = open("/dev/tty", "r+")
+terminal_input = open("/dev/tty", "r")
 
 
 def current_value(key: str) -> str:
@@ -59,11 +60,10 @@ def ask_value(key: str, label: str, *, secret: bool = False) -> str:
     while True:
         prompt = f"{label}: "
         if secret:
-            value = getpass.getpass(prompt, stream=terminal).strip()
+          value = getpass.getpass(prompt).strip()
         else:
-            terminal.write(prompt)
-            terminal.flush()
-            value = terminal.readline().rstrip("\r\n").strip()
+          print(prompt, end="", file=sys.stderr, flush=True)
+          value = terminal_input.readline().rstrip("\r\n").strip()
         if value:
             set_key(str(env_path), key, value, quote_mode="always")
             return value
@@ -73,7 +73,7 @@ def ask_value(key: str, label: str, *, secret: bool = False) -> str:
 def ask_optional_secret(key: str, label: str) -> None:
     if current_value(key):
         return
-    value = getpass.getpass(f"{label} (Enter to skip): ", stream=terminal).strip()
+    value = getpass.getpass(f"{label} (Enter to skip): ").strip()
     if value:
         set_key(str(env_path), key, value, quote_mode="always")
 
