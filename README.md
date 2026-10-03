@@ -1,0 +1,238 @@
+# Telegram Research API
+
+Это закрытый исследовательский стенд для тестирования Telegram-сессий на
+центральном аккаунте владельца. API проверяет токен и единственный allowlisted
+recipient, после чего отправляет через выбранную Telethon-сессию. Автоответы
+выключены по умолчанию и слушают только личные сообщения от центрального аккаунта.
+
+## Как устроено
+
+- `api/` — HTTP-маршруты и форматы запросов/ответов;
+- `services/` — проверки получателей, лимитов и расписания;
+- `integrations/telegram.py` — единственное место, которое вызывает Telethon;
+- `database/connection.py` — SQLite-соединения и схема;
+- `database/models.py` — простые объекты данных;
+- `database/requests.py` — все SQL-запросы к базе;
+- `settings.py` — настройки из переменных окружения.
+
+Если совсем просто: API получает команду отправить текст, проверяет адресата,
+аккаунт и общий интервал, затем передаёт сообщение Telethon. Планировщик выбирает
+случайную заготовку и отправителя по кругу. При включённом автоответе Telethon
+слушает ответы только центрального тестового аккаунта, берёт последние реплики
+из SQLite и передаёт их вместе с prompt в OpenAI-compatible LLM endpoint.
+Полученные updates дедуплицируются по Telegram message ID.
+
+
+## Запуск
+
+Python 3.9 или новее:
+
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+cp -n .env.example .env
+```
+
+Файл `.env` уже создан в этой рабочей копии; если его нет в новой копии,
+`cp -n` создаст его из примера и не перезапишет существующий. Файл исключён из
+Git: внесите секреты только туда, не в `.env.example` и не в исходники.
+
+Где взять значения:
+
+- `CONTROL_BOT_TOKEN` — создать бота через `@BotFather` и скопировать token;
+- `TELEGRAM_API_ID` и `TELEGRAM_API_HASH` — создать приложение на `my.telegram.org`;
+- `CONTROL_ADMIN_IDS` — numeric user ID, например узнать через `@userinfobot`;
+- `API_TOKEN` — общий секрет API и админ-бота; сгенерировать можно `openssl rand -hex 32`;
+- `TELEGRAM_ALLOWED_RECIPIENTS` — username центрального тестового аккаунта без `@`;
+- `LLM_API_KEY` — необязателен, нужен только для автоответов по prompt.
+
+Запустите API в первом терминале из корня проекта:
+
+```bash
+source .venv/bin/activate
+uvicorn research_sim.api.app:app --host 127.0.0.1 --port 8000
+```
+
+Во втором терминале, также из корня проекта, запустите админ-бота:
+
+```bash
+source .venv/bin/activate
+python -m research_sim.bot.app
+```
+
+Откройте бота в Telegram и отправьте `/start`. API проверяется по
+`http://127.0.0.1:8000/health`; интерактивная документация доступна на
+`http://127.0.0.1:8000/docs`.
+
+API слушает только локальный интерфейс по умолчанию. Для каждого аккаунта нужна
+авторизованная Telethon-сессия. Сессии должны лежать вне репозитория в
+`TELEGRAM_SESSION_DIR`; файлы и API-токен не публикуйте. Файлы `.session` от
+Pyrogram несовместимы с Telethon: их нельзя просто переименовать, каждый аккаунт
+нужно авторизовать и создать новую Telethon-сессию.
+
+API и бот можно запустить и проверить меню без зарегистрированных сессий. Для
+фактической отправки положите заранее авторизованные Telethon-файлы
+`<account_key>.session` в `TELEGRAM_SESSION_DIR`, затем добавьте их через
+`/add_account`. Пока автоответы выключены, `LLM_API_KEY` можно не заполнять.
+
+## Аккаунты отправителя
+
+Добавьте собственные аккаунты в API. `account_key` должен совпадать с именем
+Telethon-сессии без суффикса `.session`: например, ключ `business` использует
+файл `$TELEGRAM_SESSION_DIR/business.session`. В SQLite записываются ключ,
+подпись и статистика использования, но не телефон, пароль, API hash или файл
+сессии.
+
+```bash
+curl -X POST http://127.0.0.1:8000/api/v1/accounts \
+  -H "Authorization: Bearer $API_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"account_key":"business","label":"Бизнес"}'
+
+curl -X POST http://127.0.0.1:8000/api/v1/accounts \
+  -H "Authorization: Bearer $API_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"account_key":"personal","label":"Личный"}'
+
+curl http://127.0.0.1:8000/api/v1/accounts \
+  -H "Authorization: Bearer $API_TOKEN"
+```
+
+`POST /api/v1/accounts` регистрирует аккаунт, `GET /api/v1/accounts` показывает
+реестр и число отправок, `PATCH /api/v1/accounts/{account_key}` с телом
+`{"enabled":false}` временно исключает сессию из чередования. API использует
+общие `TELEGRAM_API_ID` и `TELEGRAM_API_HASH`, а session-файлы должны быть уже
+авторизованы отдельно для каждого вашего аккаунта.
+
+## Отправить сообщение
+
+Все endpoints, кроме `/health`, требуют `Authorization: Bearer <API_TOKEN>`.
+Получатель обязан входить в `TELEGRAM_ALLOWED_RECIPIENTS`; для этой установки
+укажите там только центральный тестовый аккаунт. Отправка ограничена одним
+сообщением за минимальный интервал, по умолчанию 30 секунд. Укажите
+`account_index` из `GET /api/v1/accounts`; индекс начинается с 1 и соответствует
+позиции в текущем списке. Выбранный аккаунт должен быть включён.
+
+```bash
+curl -X POST http://127.0.0.1:8000/api/v1/messages/send \
+  -H "Authorization: Bearer $API_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"recipient":"partner_username","text":"Согласованное тестовое сообщение","account_index":1}'
+```
+
+Для фотографии используйте `POST /api/v1/messages/send-with-photo` с
+`multipart/form-data`: поля `recipient`, `text`, `account_index` и файл `photo`.
+Поддерживается JPEG до 10 MB. Файл передаётся Telethon из памяти, не сохраняется
+приложением; подпись ограничена 1024 символами.
+
+```bash
+curl -X POST http://127.0.0.1:8000/api/v1/messages/send-with-photo \
+  -H "Authorization: Bearer $API_TOKEN" \
+  -F "recipient=partner_username" \
+  -F "text=Согласованное сообщение с фото" \
+  -F "account_index=1" \
+  -F "photo=@./test.jpg;type=image/jpeg"
+```
+
+История для конкретного отправителя доступна по адресу
+`GET /api/v1/accounts/{account_key}/history?limit=50`. Для следующей страницы
+передайте `before_id` со значением `id` последней записи. История показывает
+время, получателя, текст, статус, наличие фотографии и ошибку при неудаче; сами
+фото не хранятся.
+
+## Настроить кампанию
+
+Настройка меняется через бота `/campaign_setup` или
+`PUT /api/v1/settings/campaign` и хранится в SQLite. Пул содержит шаблоны,
+из которых каждый слот выбирает случайный; поддерживаются `{date}`, `{day}` и
+`{slot}`. Расписание 1/2/1 задаётся по дням в зоне `Europe/Moscow` (МСК), а
+плановые отправки идут по кругу через активные аккаунты.
+
+```bash
+curl -X PUT http://127.0.0.1:8000/api/v1/settings/campaign \
+  -H "Authorization: Bearer $API_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "campaign_id":"partner-checkin",
+    "enabled":false,
+    "start_date":"2026-10-05",
+    "recipient":"partner_username",
+    "phrases":["Тестовый этап {day}, слот {slot}"],
+    "day_slots":{"1":["10:00"],"2":["10:00","15:00"],"3":["10:00"]},
+    "reply_prompt":"Ты отвечаешь центральному тестовому аккаунту кратко и по теме.",
+    "auto_reply_enabled":false
+  }'
+```
+
+После проверки конфигурации включите плановые отправки (`enabled=true`) и/или
+автоответы (`auto_reply_enabled=true`) отдельно. Планировщик обрабатывает только
+совпавший слот. Автоответы требуют `reply_prompt`, `LLM_API_KEY`, хотя бы одной
+активной сессии и ровно одного центрального recipient в allowlist. Они не зависят
+от включения планового расписания. При остановке API Telethon listeners
+отключаются; после старта синхронизируются снова. Повторный слот и повторный
+входящий Telegram update не отправляются дважды.
+
+## Endpoints
+
+- `GET /health` — проверка доступности;
+- `GET /api/v1/accounts` — список зарегистрированных аккаунтов отправителя;
+- `POST /api/v1/accounts` — добавить аккаунт в реестр;
+- `PATCH /api/v1/accounts/{account_key}` — включить или отключить аккаунт;
+- `GET /api/v1/accounts/{account_key}/history` — постраничная история аккаунта;
+- `POST /api/v1/messages/send` — отправить одно allowlisted сообщение;
+- `POST /api/v1/messages/send-with-photo` — отправить JPEG с подписью;
+- `GET /api/v1/settings/campaign` — прочитать настройки;
+- `PUT /api/v1/settings/campaign` — проверить и сохранить настройки;
+- `POST /api/v1/campaign/tick` — обработать текущий слот расписания.
+
+Документация схем API доступна в `/docs` после запуска сервера.
+
+## Telegram-бот управления
+
+Бот даёт администратору меню для списка аккаунтов, отправки текста или JPEG,
+истории по выбранному аккаунту, шаблонов, промпта и расписания.
+История и статусы показывают время по Москве (`Europe/Moscow`). Расписание
+обрабатывается автоматически, пока запущен процесс бота.
+
+Создайте отдельного Telegram-бота через BotFather. В отдельном терминале
+задайте те же `API_TOKEN`, адрес API, центрального получателя и каталог сессий,
+а также токен бота:
+
+```bash
+export CONTROL_BOT_TOKEN="token-from-botfather"
+export CONTROL_ADMIN_IDS="123456789"
+export API_TOKEN="same-api-token-as-the-api"
+export API_BASE_URL="http://127.0.0.1:8000"
+export TELEGRAM_ALLOWED_RECIPIENTS="partner_username"
+export TELEGRAM_SESSION_DIR="$HOME/.telegram-research-simulator/sessions"
+python -m research_sim.bot.app
+```
+
+Узнать свой numeric ID можно командой `/whoami`; доступ к панели будет только
+у ID из `CONTROL_ADMIN_IDS`. Несколько администраторов задаются через запятую.
+
+Добавление аккаунта в боте регистрирует ключ и подпись в API, но не загружает
+секретную сессию через Telegram. Сначала положите уже авторизованный файл,
+например `business.session`, в каталог сессий на сервере API, затем выполните
+`/add_account` и укажите ключ `business`. Для каждого аккаунта нужен отдельный
+авторизованный `.session` файл. В меню `/send` выберите аккаунт, введите текст,
+а затем отправьте JPEG или нажмите `/skip`. Бот направляет сообщения только
+центральному получателю из `TELEGRAM_ALLOWED_RECIPIENTS`.
+
+`/campaign_setup` просит дату, шаблоны по одному на строку, prompt для ответов и
+слоты дней 1–3 в формате `10:00 | 10:00,15:00 | 10:00`. Доступны переменные
+`{date}`, `{day}`, `{slot}`. Конфигурация сохраняется выключенной. Плановые
+сообщения включаются `/campaign_enable`, автоответы отдельно включаются
+`/auto_reply_enable`; остановить автоответы можно `/auto_reply_disable`.
+Для генерации ответов API использует `LLM_API_KEY`, `LLM_BASE_URL`, `LLM_MODEL`.
+LLM получает prompt и до 12 последних реплик именно этой sender-сессии. Новые
+личные сообщения принимаются только от центрального allowlisted аккаунта.
+
+## Тесты
+
+```bash
+python -m unittest discover -s tests -v
+```
+
+Тесты используют подменённый Telethon-клиент и не обращаются к Telegram.

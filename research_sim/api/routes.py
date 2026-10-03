@@ -1,0 +1,254 @@
+from __future__ import annotations
+
+import secrets
+from typing import Optional
+
+from fastapi import (
+    APIRouter,
+    Depends,
+    File,
+    Form,
+    HTTPException,
+    Query,
+    Request,
+    UploadFile,
+    status,
+)
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
+
+from .schemas import (
+    CampaignSettingsPayload,
+    CampaignTickResponse,
+    MessageHistoryItem,
+    SenderAccountCreate,
+    SenderAccountEnabledUpdate,
+    SenderAccountResponse,
+    SendMessageRequest,
+    SendMessageResponse,
+)
+from ..services.accounts import AccountAlreadyExists
+from ..services.campaign import CampaignDisabled, CampaignNotConfigured
+from ..services.messaging import (
+    MessagingService,
+    RecipientNotAllowed,
+    SendRateLimitExceeded,
+    SenderAccountNotAvailable,
+)
+
+
+bearer_scheme = HTTPBearer(auto_error=False)
+router = APIRouter()
+
+
+def require_api_token(
+    request: Request,
+    credentials: Optional[HTTPAuthorizationCredentials] = Depends(bearer_scheme),
+) -> None:
+    expected = request.app.state.settings.api_token
+    if not expected:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="API_TOKEN is not configured",
+        )
+    if credentials is None or not secrets.compare_digest(
+        credentials.credentials, expected
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="valid bearer token required",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
+
+protected_router = APIRouter(
+    prefix="/api/v1",
+    dependencies=[Depends(require_api_token)],
+)
+
+
+@protected_router.get("/accounts", response_model=list[SenderAccountResponse])
+def list_sender_accounts(request: Request) -> list[SenderAccountResponse]:
+    accounts = request.app.state.account_service.list()
+    return [SenderAccountResponse(**account.__dict__) for account in accounts]
+
+
+@protected_router.post(
+    "/accounts",
+    response_model=SenderAccountResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+def add_sender_account(
+    payload: SenderAccountCreate,
+    request: Request,
+) -> SenderAccountResponse:
+    try:
+        account = request.app.state.account_service.add(
+            payload.account_key,
+            payload.label,
+        )
+    except AccountAlreadyExists as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return SenderAccountResponse(**account.__dict__)
+
+
+@protected_router.patch(
+    "/accounts/{account_key}",
+    response_model=SenderAccountResponse,
+)
+def update_sender_account(
+    account_key: str,
+    payload: SenderAccountEnabledUpdate,
+    request: Request,
+) -> SenderAccountResponse:
+    service = request.app.state.account_service
+    try:
+        found = service.set_enabled(account_key, payload.enabled)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    if not found:
+        raise HTTPException(status_code=404, detail="sender account not found")
+    account = next(item for item in service.list() if item.account_key == account_key)
+    return SenderAccountResponse(**account.__dict__)
+
+
+@protected_router.get(
+    "/accounts/{account_key}/history",
+    response_model=list[MessageHistoryItem],
+)
+def get_sender_account_history(
+    account_key: str,
+    request: Request,
+    limit: int = Query(default=50, ge=1, le=200),
+    before_id: Optional[int] = Query(default=None, ge=1),
+) -> list[MessageHistoryItem]:
+    accounts = request.app.state.account_service.list()
+    if not any(account.account_key == account_key for account in accounts):
+        raise HTTPException(status_code=404, detail="sender account not found")
+    history = request.app.state.database_requests.get_account_history(
+        account_key,
+        limit=limit,
+        before_id=before_id,
+    )
+    return [MessageHistoryItem(**item) for item in history]
+
+
+@protected_router.get("/settings/campaign")
+def get_campaign_settings(request: Request) -> Optional[dict]:
+    return request.app.state.campaign_service.get_settings()
+
+
+@protected_router.put("/settings/campaign", response_model=CampaignSettingsPayload)
+def put_campaign_settings(
+    payload: CampaignSettingsPayload,
+    request: Request,
+) -> dict:
+    try:
+        return request.app.state.campaign_service.save_settings(
+            payload.model_dump(mode="json")
+        )
+    except (RecipientNotAllowed, ValueError) as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@protected_router.post("/messages/send", response_model=SendMessageResponse)
+async def send_message(
+    payload: SendMessageRequest,
+    request: Request,
+) -> SendMessageResponse:
+    service: MessagingService = request.app.state.messaging_service
+    try:
+        result = await service.send_message(
+            payload.recipient,
+            payload.text,
+            sender_account_index=payload.account_index,
+        )
+    except RecipientNotAllowed as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    except SendRateLimitExceeded as exc:
+        raise HTTPException(status_code=429, detail=str(exc)) from exc
+    except SenderAccountNotAvailable as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail="Telegram delivery failed") from exc
+    return SendMessageResponse(
+        delivery_id=result.delivery_id,
+        recipient=result.recipient,
+        sender_account=result.sender_account,
+        account_index=result.sender_account_index,
+        text=result.text,
+        photo_attached=result.photo_attached,
+    )
+
+
+@protected_router.post("/messages/send-with-photo", response_model=SendMessageResponse)
+async def send_message_with_photo(
+    request: Request,
+    recipient: str = Form(..., min_length=1, max_length=64),
+    text: str = Form(..., min_length=1, max_length=1024),
+    account_index: int = Form(..., ge=1),
+    photo: UploadFile = File(...),
+) -> SendMessageResponse:
+    if photo.content_type != "image/jpeg":
+        raise HTTPException(status_code=415, detail="photo must be a JPEG image")
+    photo_bytes = await photo.read(10 * 1024 * 1024 + 1)
+    if len(photo_bytes) > 10 * 1024 * 1024:
+        raise HTTPException(status_code=413, detail="photo must be 10 MB or smaller")
+    if not photo_bytes.startswith(b"\xff\xd8\xff"):
+        raise HTTPException(status_code=415, detail="uploaded file is not a JPEG image")
+
+    service: MessagingService = request.app.state.messaging_service
+    try:
+        result = await service.send_message(
+            recipient,
+            text,
+            sender_account_index=account_index,
+            photo=photo_bytes,
+        )
+    except RecipientNotAllowed as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    except SendRateLimitExceeded as exc:
+        raise HTTPException(status_code=429, detail=str(exc)) from exc
+    except SenderAccountNotAvailable as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail="Telegram delivery failed") from exc
+    return SendMessageResponse(
+        delivery_id=result.delivery_id,
+        recipient=result.recipient,
+        sender_account=result.sender_account,
+        account_index=result.sender_account_index,
+        text=result.text,
+        photo_attached=result.photo_attached,
+    )
+
+
+@protected_router.post("/campaign/tick", response_model=CampaignTickResponse)
+async def campaign_tick(request: Request) -> CampaignTickResponse:
+    try:
+        result = await request.app.state.campaign_service.tick()
+    except CampaignNotConfigured as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except CampaignDisabled as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except RecipientNotAllowed as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    except SendRateLimitExceeded as exc:
+        raise HTTPException(status_code=429, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail="Telegram delivery failed") from exc
+    return CampaignTickResponse(**result)
+
+
+router.include_router(protected_router)

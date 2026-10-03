@@ -1,0 +1,191 @@
+from __future__ import annotations
+
+import asyncio
+import logging
+from typing import Any, Dict
+
+from telethon import events
+
+from ..database.requests import DatabaseRequests
+from ..integrations.telegram import TelethonSender
+from ..services.messaging import MessagingService
+from ..settings import Settings
+from .prompt_responder import PromptResponder
+
+
+LOGGER = logging.getLogger(__name__)
+
+
+class AutoReplyRuntime:
+    """Listen only to the single configured central test account."""
+
+    def __init__(
+        self,
+        settings: Settings,
+        requests: DatabaseRequests,
+        sender: TelethonSender,
+        messaging: MessagingService,
+        responder: PromptResponder,
+    ) -> None:
+        self.settings = settings
+        self.requests = requests
+        self.sender = sender
+        self.messaging = messaging
+        self.responder = responder
+        self._task: asyncio.Task[None] | None = None
+        self._central_sender_ids: Dict[str, int] = {}
+        self._handlers: Dict[str, Any] = {}
+
+    async def start(self) -> None:
+        if self._task is None:
+            self._task = asyncio.create_task(self._run())
+
+    async def stop(self) -> None:
+        if self._task is not None:
+            self._task.cancel()
+            try:
+                await self._task
+            except asyncio.CancelledError:
+                pass
+            self._task = None
+        for account_key in list(self._handlers):
+            await self._remove_account(account_key)
+
+    async def _run(self) -> None:
+        while True:
+            try:
+                await self._sync_accounts()
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                LOGGER.exception("Failed to synchronize Telethon listeners")
+            await asyncio.sleep(15)
+
+    async def _sync_accounts(self) -> None:
+        campaign_record = self.requests.get_campaign_settings()
+        config = campaign_record.config if campaign_record else {}
+        should_listen = bool(
+            config.get("auto_reply_enabled")
+            and config.get("reply_prompt")
+        )
+        if not should_listen:
+            for account_key in list(self._handlers):
+                await self._remove_account(account_key)
+            return
+        if len(self.settings.allowed_recipients) != 1:
+            LOGGER.error("Auto-replies require exactly one allowlisted central recipient")
+            for account_key in list(self._handlers):
+                await self._remove_account(account_key)
+            return
+        if not self.settings.llm_api_key:
+            LOGGER.error("Auto-replies enabled but LLM_API_KEY is not configured")
+            for account_key in list(self._handlers):
+                await self._remove_account(account_key)
+            return
+
+        recipient = next(iter(self.settings.allowed_recipients))
+        accounts = {
+            account.account_key
+            for account in self.requests.list_sender_accounts()
+            if account.enabled
+        }
+        for account_key in set(self._handlers) - accounts:
+            await self._remove_account(account_key)
+        for account_key in accounts - set(self._handlers):
+            try:
+                client = await self.sender.connect_session(account_key)
+                peer = await client.get_entity("@" + recipient)
+                central_sender_id = int(peer.id)
+
+                async def handle_message(
+                    event: Any,
+                    key: str = account_key,
+                    expected_sender_id: int = central_sender_id,
+                ) -> None:
+                    await self._handle_message(key, expected_sender_id, event)
+
+                client.add_event_handler(
+                    handle_message,
+                    events.NewMessage(incoming=True, from_users=peer),
+                )
+                self._handlers[account_key] = (client, handle_message)
+            except Exception:
+                LOGGER.exception("Could not start auto-reply listener for %s", account_key)
+
+    async def _remove_account(self, account_key: str) -> None:
+        registered = self._handlers.pop(account_key, None)
+        self._central_sender_ids.pop(account_key, None)
+        if registered is not None:
+            client, callback = registered
+            client.remove_event_handler(callback)
+        await self.sender.disconnect_session(account_key)
+
+    async def _handle_message(
+        self,
+        account_key: str,
+        expected_sender_id: int,
+        event: Any,
+    ) -> None:
+        if getattr(event, "is_private", True) is not True:
+            return
+        message = event.message
+        message_text = (message.message or "").strip()
+        sender_id = event.sender_id
+        if (
+            not message_text
+            or sender_id is None
+            or int(sender_id) != expected_sender_id
+        ):
+            return
+        claimed = self.requests.claim_received_message(
+            account_key=account_key,
+            telegram_message_id=int(message.id),
+            sender_id=int(sender_id),
+            message_text=message_text,
+        )
+        if not claimed:
+            return
+
+        record = self.requests.get_campaign_settings()
+        config = record.config if record else {}
+        if not (
+            config.get("auto_reply_enabled")
+            and config.get("reply_prompt")
+        ):
+            self.requests.set_received_message_status(
+                account_key,
+                int(message.id),
+                "ignored",
+            )
+            return
+
+        try:
+            reply = await self.responder.create_reply(
+                config["reply_prompt"],
+                message_text,
+                history=self.requests.get_conversation_context(account_key, limit=12),
+            )
+            accounts = self.requests.list_sender_accounts()
+            account_index = next(
+                account.account_index
+                for account in accounts
+                if account.account_key == account_key and account.enabled
+            )
+            await self.messaging.send_message(
+                next(iter(self.settings.allowed_recipients)),
+                reply,
+                sender_account_index=account_index,
+            )
+        except Exception:
+            self.requests.set_received_message_status(
+                account_key,
+                int(message.id),
+                "failed",
+            )
+            LOGGER.exception("Automatic reply failed for account %s", account_key)
+            return
+        self.requests.set_received_message_status(
+            account_key,
+            int(message.id),
+            "replied",
+        )
