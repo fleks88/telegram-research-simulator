@@ -4,13 +4,13 @@ set -euo pipefail
 ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 cd "$ROOT"
 
-if ! git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
-  printf 'Error: run this script from a cloned Git repository.\n' >&2
+if [[ ! -r /dev/tty || ! -w /dev/tty ]]; then
+  printf 'Error: deploy.sh needs an interactive terminal. Run it directly in your SSH session.\n' >&2
   exit 1
 fi
 
-if [[ -n "$(git status --porcelain --untracked-files=no)" ]]; then
-  printf 'Error: tracked files have local changes. Commit/stash them before deploy.\n' >&2
+if ! git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+  printf 'Error: run this script from a cloned Git repository.\n' >&2
   exit 1
 fi
 
@@ -44,6 +44,7 @@ from pathlib import Path
 from dotenv import dotenv_values, set_key
 
 env_path = Path(".env")
+terminal = open("/dev/tty", "r+")
 
 
 def current_value(key: str) -> str:
@@ -57,7 +58,12 @@ def ask_value(key: str, label: str, *, secret: bool = False) -> str:
         return existing
     while True:
         prompt = f"{label}: "
-        value = (getpass.getpass(prompt) if secret else input(prompt)).strip()
+        if secret:
+            value = getpass.getpass(prompt, stream=terminal).strip()
+        else:
+            terminal.write(prompt)
+            terminal.flush()
+            value = terminal.readline().rstrip("\r\n").strip()
         if value:
             set_key(str(env_path), key, value, quote_mode="always")
             return value
@@ -67,7 +73,7 @@ def ask_value(key: str, label: str, *, secret: bool = False) -> str:
 def ask_optional_secret(key: str, label: str) -> None:
     if current_value(key):
         return
-    value = getpass.getpass(f"{label} (Enter to skip): ").strip()
+    value = getpass.getpass(f"{label} (Enter to skip): ", stream=terminal).strip()
     if value:
         set_key(str(env_path), key, value, quote_mode="always")
 

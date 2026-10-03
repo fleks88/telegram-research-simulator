@@ -83,7 +83,9 @@ cd REPOSITORY
 без отображения в терминале, `API_TOKEN` скрипт генерирует сам. Перед запуском
 понадобятся `CONTROL_BOT_TOKEN` из `@BotFather`, ваш numeric admin ID,
 `TELEGRAM_API_ID`/`TELEGRAM_API_HASH` с `my.telegram.org` и username центрального
-тестового аккаунта. LLM API key можно пропустить. Затем скрипт запускает два
+тестового аккаунта. LLM API key можно пропустить. Запускайте `./deploy.sh`
+непосредственно в интерактивной SSH-сессии, не через `curl | bash` и не с
+перенаправленным stdin. Затем скрипт запускает два
 процесса из `ecosystem.config.cjs` под PM2. Для проверки:
 
 ```bash
