@@ -112,9 +112,11 @@ class MessagingService:
                 raise RuntimeError("no active sender accounts are registered")
             if campaign_id is not None or apply_persona:
                 persona = self.personas.get(sender_account.account_key)
-                if persona["identity_prompt"].strip() and self.prompt_responder is not None:
+                if self.prompt_responder is not None and self.settings.llm_api_key:
                     message = await self.prompt_responder.rewrite_for_persona(
-                        identity_prompt=persona["identity_prompt"],
+                        identity_prompt=self.personas.prompt_fragment(
+                            sender_account.account_key
+                        ),
                         text=message,
                         word_accuracy_percent=persona["word_accuracy_percent"],
                         punctuation_accuracy_percent=persona["punctuation_accuracy_percent"],

@@ -2,15 +2,18 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import random
+import time
 from typing import Any, Dict
 
 from telethon import events
 
 from ..database.requests import DatabaseRequests
 from ..integrations.telegram import TelethonSender
-from ..services.messaging import MessagingService
+from ..services.messaging import MessagingService, SendRateLimitExceeded
 from ..settings import Settings
 from .prompt_responder import PromptResponder
+from .personas import PersonaService
 
 
 LOGGER = logging.getLogger(__name__)
@@ -32,6 +35,7 @@ class AutoReplyRuntime:
         self.sender = sender
         self.messaging = messaging
         self.responder = responder
+        self.personas = PersonaService(requests)
         self._task: asyncio.Task[None] | None = None
         self._central_sender_ids: Dict[str, int] = {}
         self._handlers: Dict[str, Any] = {}
@@ -55,6 +59,7 @@ class AutoReplyRuntime:
         while True:
             try:
                 await self._sync_accounts()
+                await self.process_due_replies()
             except asyncio.CancelledError:
                 raise
             except Exception:
@@ -159,33 +164,71 @@ class AutoReplyRuntime:
             )
             return
 
-        try:
-            reply = await self.responder.create_reply(
-                config["reply_prompt"],
-                message_text,
-                history=self.requests.get_conversation_context(account_key, limit=12),
-            )
-            accounts = self.requests.list_sender_accounts()
-            account_index = next(
-                account.account_index
-                for account in accounts
-                if account.account_key == account_key and account.enabled
-            )
-            await self.messaging.send_message(
-                next(iter(self.settings.allowed_recipients)),
-                reply,
-                sender_account_index=account_index,
-            )
-        except Exception:
-            self.requests.set_received_message_status(
-                account_key,
-                int(message.id),
-                "failed",
-            )
-            LOGGER.exception("Automatic reply failed for account %s", account_key)
-            return
-        self.requests.set_received_message_status(
-            account_key,
-            int(message.id),
-            "replied",
+        minimum = int(config.get("reply_delay_min_minutes", 2))
+        maximum = int(config.get("reply_delay_max_minutes", 180))
+        delay_seconds = random.randint(minimum * 60, maximum * 60)
+        self.requests.enqueue_auto_reply(
+            account_key=account_key,
+            telegram_message_id=int(message.id),
+            due_at=time.time() + delay_seconds,
         )
+
+    async def process_due_replies(self, *, now: float | None = None) -> int:
+        rows = self.requests.claim_due_auto_replies(now=now, limit=10)
+        sent = 0
+        for row in rows:
+            record = self.requests.get_campaign_settings()
+            config = record.config if record else {}
+            if not (config.get("auto_reply_enabled") and config.get("reply_prompt")):
+                self.requests.requeue_auto_reply(row["id"], due_at=(now or time.time()) + 60)
+                continue
+            accounts = self.requests.list_sender_accounts()
+            account = next(
+                (
+                    item
+                    for item in accounts
+                    if item.account_key == row["account_key"] and item.enabled
+                ),
+                None,
+            )
+            if account is None:
+                self.requests.requeue_auto_reply(row["id"], due_at=(now or time.time()) + 300)
+                continue
+            prompt = (
+                config["reply_prompt"].strip()
+                + "\n\n"
+                + self.personas.prompt_fragment(row["account_key"])
+            )
+            try:
+                reply = await self.responder.create_reply(
+                    prompt,
+                    row["message_text"],
+                    history=self.requests.get_conversation_context(
+                        row["account_key"], limit=12
+                    ),
+                )
+                await self.messaging.send_message(
+                    next(iter(self.settings.allowed_recipients)),
+                    reply,
+                    sender_account_index=account.account_index,
+                )
+            except SendRateLimitExceeded:
+                self.requests.requeue_auto_reply(
+                    row["id"], due_at=(now or time.time()) + 60
+                )
+                continue
+            except Exception as exc:
+                self.requests.finish_auto_reply(row["id"], status="failed", error=str(exc))
+                self.requests.set_received_message_status(
+                    row["account_key"], row["telegram_message_id"], "failed"
+                )
+                LOGGER.exception(
+                    "Automatic reply failed for account %s", row["account_key"]
+                )
+                continue
+            self.requests.finish_auto_reply(row["id"], status="sent")
+            self.requests.set_received_message_status(
+                row["account_key"], row["telegram_message_id"], "replied"
+            )
+            sent += 1
+        return sent

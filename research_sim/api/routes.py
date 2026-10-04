@@ -225,6 +225,15 @@ def get_activation_status(request: Request) -> dict:
     }
 
 
+@protected_router.get("/auto-replies/status")
+def get_auto_reply_status(request: Request) -> dict:
+    pending = request.app.state.database_requests.list_pending_auto_replies(limit=50)
+    return {
+        "pending": len(pending),
+        "items": pending,
+    }
+
+
 @protected_router.put("/settings/campaign", response_model=CampaignSettingsPayload)
 def put_campaign_settings(
     payload: CampaignSettingsPayload,

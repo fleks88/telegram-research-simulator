@@ -80,6 +80,9 @@ class ApiTest(unittest.TestCase):
         self.assertFalse(response.json()["enabled"])
         self.assertIsNone(response.json()["first_response"])
         self.assertEqual(response.json()["pending"], 0)
+        replies = self.client.get("/api/v1/auto-replies/status", headers=self.auth)
+        self.assertEqual(replies.status_code, 200)
+        self.assertEqual(replies.json(), {"pending": 0, "items": []})
 
     def test_sender_settings_allow_only_one_central_recipient(self) -> None:
         from unittest.mock import patch
@@ -248,13 +251,14 @@ class ApiTest(unittest.TestCase):
             json=profile,
         )
         self.assertEqual(response.status_code, 200, response.text)
-        self.assertEqual(
-            self.client.get(
-                "/api/v1/accounts/business/persona",
-                headers=self.auth,
-            ).json(),
-            profile,
-        )
+        saved_profile = self.client.get(
+            "/api/v1/accounts/business/persona",
+            headers=self.auth,
+        ).json()
+        self.assertEqual(saved_profile["identity_prompt"], profile["identity_prompt"])
+        self.assertEqual(saved_profile["word_accuracy_percent"], 93)
+        self.assertEqual(saved_profile["literacy_level"], 5)
+        self.assertEqual(saved_profile["aggression_level"], 1)
         invalid = dict(profile, word_accuracy_percent=101)
         response = self.client.put(
             "/api/v1/accounts/business/persona",
@@ -360,6 +364,18 @@ class ApiTest(unittest.TestCase):
             "/api/v1/settings/campaign",
             headers=self.auth,
             json=invalid_template,
+        )
+        self.assertEqual(response.status_code, 422)
+
+        invalid_delay = dict(
+            base_payload,
+            reply_delay_min_minutes=181,
+            reply_delay_max_minutes=180,
+        )
+        response = self.client.put(
+            "/api/v1/settings/campaign",
+            headers=self.auth,
+            json=invalid_delay,
         )
         self.assertEqual(response.status_code, 422)
 

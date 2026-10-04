@@ -175,6 +175,93 @@ class DatabaseRequests:
                 (status, account_key, telegram_message_id),
             )
 
+    def enqueue_auto_reply(
+        self,
+        *,
+        account_key: str,
+        telegram_message_id: int,
+        due_at: float,
+    ) -> bool:
+        with self.database.connect() as connection:
+            cursor = connection.execute(
+                """INSERT OR IGNORE INTO pending_auto_replies
+                   (account_key, telegram_message_id, due_at, created_at)
+                   VALUES (?, ?, ?, ?)""",
+                (account_key, telegram_message_id, due_at, time.time()),
+            )
+            return cursor.rowcount == 1
+
+    def claim_due_auto_replies(
+        self,
+        *,
+        now: Optional[float] = None,
+        limit: int = 10,
+    ) -> list[Dict[str, Any]]:
+        current = time.time() if now is None else now
+        with self.database.connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            connection.execute(
+                """UPDATE pending_auto_replies
+                   SET status = 'queued', processed_at = NULL
+                   WHERE status = 'processing' AND processed_at < ?""",
+                (current - 300,),
+            )
+            rows = connection.execute(
+                """SELECT q.id, q.account_key, q.telegram_message_id, q.due_at,
+                          r.message_text
+                   FROM pending_auto_replies q
+                   JOIN received_messages r
+                     ON r.account_key = q.account_key
+                    AND r.telegram_message_id = q.telegram_message_id
+                   WHERE q.status = 'queued' AND q.due_at <= ?
+                   ORDER BY q.due_at, q.id LIMIT ?""",
+                (current, limit),
+            ).fetchall()
+            if rows:
+                placeholders = ",".join("?" for _ in rows)
+                connection.execute(
+                    f"UPDATE pending_auto_replies "
+                    f"SET status = 'processing', processed_at = ? "
+                    f"WHERE id IN ({placeholders})",
+                    (current, *(row["id"] for row in rows)),
+                )
+        return [dict(row) for row in rows]
+
+    def finish_auto_reply(
+        self,
+        queue_id: int,
+        *,
+        status: str,
+        error: Optional[str] = None,
+    ) -> None:
+        with self.database.connect() as connection:
+            connection.execute(
+                """UPDATE pending_auto_replies
+                   SET status = ?, processed_at = ?, error = ? WHERE id = ?""",
+                (status, time.time(), error[:500] if error else None, queue_id),
+            )
+
+    def requeue_auto_reply(self, queue_id: int, *, due_at: float) -> None:
+        with self.database.connect() as connection:
+            connection.execute(
+                """UPDATE pending_auto_replies
+                   SET status = 'queued', due_at = ?, processed_at = NULL, error = NULL
+                   WHERE id = ?""",
+                (due_at, queue_id),
+            )
+
+    def list_pending_auto_replies(self, *, limit: int = 50) -> list[Dict[str, Any]]:
+        with self.database.connect() as connection:
+            rows = connection.execute(
+                """SELECT id, account_key, telegram_message_id, due_at, status,
+                          created_at, processed_at, error
+                   FROM pending_auto_replies
+                   WHERE status IN ('queued', 'processing')
+                   ORDER BY due_at, id LIMIT ?""",
+                (limit,),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
     def get_conversation_context(
         self,
         account_key: str,

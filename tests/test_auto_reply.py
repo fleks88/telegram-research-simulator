@@ -58,6 +58,8 @@ class AutoReplyRuntimeTest(unittest.IsolatedAsyncioTestCase):
                 {
                     "auto_reply_enabled": True,
                     "reply_prompt": "Test prompt",
+                    "reply_delay_min_minutes": 0,
+                    "reply_delay_max_minutes": 0,
                     "recipient": "central_user",
                 }
             )
@@ -91,10 +93,15 @@ class AutoReplyRuntimeTest(unittest.IsolatedAsyncioTestCase):
             event = FakeEvent(2, 9001, "hello")
             await runtime._handle_message("personal", 9001, event)
             await runtime._handle_message("personal", 9001, event)
+            self.assertEqual(messaging.sent, [])
+            await runtime.process_due_replies()
             self.assertEqual(
-                messaging.sent,
-                [("central_user", "Test prompt: hello", 1)],
+                len(messaging.sent),
+                1,
             )
+            self.assertEqual(messaging.sent[0][0], "central_user")
+            self.assertTrue(messaging.sent[0][1].startswith("Test prompt"))
+            self.assertEqual(messaging.sent[0][2], 1)
             self.assertEqual(responder.histories[0][-1]["direction"], "incoming")
             self.assertEqual(responder.histories[0][-1]["message_text"], "hello")
             with database.connect() as connection:

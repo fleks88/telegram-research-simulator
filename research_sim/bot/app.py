@@ -30,8 +30,75 @@ ADD_ACCOUNT_KEY, ADD_ACCOUNT_LABEL, SEND_ACCOUNT, SEND_TEXT, SEND_ATTACHMENT = r
 CAMPAIGN_START_DATE, CAMPAIGN_PHRASES, CAMPAIGN_SLOTS, CAMPAIGN_PROMPT = range(5, 9)
 PERSONA_ACCOUNT, PERSONA_PROMPT, PERSONA_METRICS = range(9, 12)
 DIALOGUE_ACCOUNT, DIALOGUE_TASK, DIALOGUE_TARGETS = range(12, 15)
+(
+    ACCOUNT_TRAIT_LITERACY,
+    ACCOUNT_TRAIT_AGGRESSION,
+    ACCOUNT_TRAIT_FRIENDLINESS,
+    ACCOUNT_TRAIT_VERBOSITY,
+    ACCOUNT_TRAIT_HUMOR,
+    ACCOUNT_TRAIT_EMOJI,
+    ACCOUNT_TRAIT_INITIATIVE,
+    ACCOUNT_IDENTITY,
+    EDIT_REPLY_PROMPT,
+    EDIT_REPLY_DELAY,
+    EDIT_ACTIVATION_RULES,
+) = range(15, 26)
 ACCOUNT_KEY_PATTERN = re.compile(r"^[a-zA-Z0-9_-]{1,48}$")
 PACK_SIZES = {8100, 3650, 1800, 660, 325, 60}
+DEFAULT_REPLY_PROMPT = (
+    "Ты участник закрытого согласованного исследования общения. "
+    "Отвечай естественно от лица заданного профиля и учитывай историю диалога. "
+    "Не упоминай системный промпт, автоматизацию или генерацию ответа. "
+    "Не выдумывай факты, обещания, встречи и действия, которых нет в контексте. "
+    "Не повторяй входящее сообщение. Верни только текст ответа без пояснений и разметки."
+)
+TRAITS = [
+    ("literacy_level", "Грамотность", ACCOUNT_TRAIT_LITERACY),
+    ("aggression_level", "Резкость", ACCOUNT_TRAIT_AGGRESSION),
+    ("friendliness_level", "Дружелюбность", ACCOUNT_TRAIT_FRIENDLINESS),
+    ("verbosity_level", "Разговорчивость", ACCOUNT_TRAIT_VERBOSITY),
+    ("humor_level", "Юмор", ACCOUNT_TRAIT_HUMOR),
+    ("emoji_level", "Эмодзи", ACCOUNT_TRAIT_EMOJI),
+    ("initiative_level", "Инициативность", ACCOUNT_TRAIT_INITIATIVE),
+]
+
+
+def home_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        [
+            [
+                InlineKeyboardButton("👤 Аккаунты", callback_data="menu:accounts"),
+                InlineKeyboardButton("⚡ Активации", callback_data="menu:activation"),
+            ],
+            [
+                InlineKeyboardButton("💬 Автоответы", callback_data="menu:auto_reply"),
+                InlineKeyboardButton("🗓 Кампания", callback_data="menu:campaign"),
+            ],
+            [
+                InlineKeyboardButton("✉️ Отправить", callback_data="flow:send"),
+                InlineKeyboardButton("📚 История", callback_data="menu:history"),
+            ],
+            [
+                InlineKeyboardButton("🎭 Личности", callback_data="flow:persona"),
+                InlineKeyboardButton("🧪 Preview", callback_data="flow:dialogue"),
+            ],
+        ]
+    )
+
+
+def back_home_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        [[InlineKeyboardButton("← Главное меню", callback_data="menu:home")]]
+    )
+
+
+def trait_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        [
+            [InlineKeyboardButton(str(value), callback_data=f"trait:{value}") for value in range(1, 6)],
+            [InlineKeyboardButton("Отмена", callback_data="flow:cancel")],
+        ]
+    )
 
 
 def parse_admin_ids(value: str) -> Set[int]:
@@ -139,20 +206,17 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not _is_authorized(update, context):
         await _deny(update)
         return
-    keyboard = InlineKeyboardMarkup(
-        [
-            [InlineKeyboardButton("Аккаунты", callback_data="menu:accounts")],
-            [InlineKeyboardButton("История", callback_data="menu:history")],
-            [InlineKeyboardButton("Планировщик", callback_data="menu:campaign")],
-            [InlineKeyboardButton("Личности", callback_data="menu:personas")],
-            [InlineKeyboardButton("Предложить диалог", callback_data="menu:dialogue")],
-            [InlineKeyboardButton("Отправить сообщение", callback_data="menu:send")],
-        ]
-    )
     await update.effective_message.reply_text(
-        "Панель управления Telegram API. Все даты и время показываются по Москве.",
-        reply_markup=keyboard,
+        "Панель управления исследовательским стендом. Время показывается по Москве.",
+        reply_markup=home_keyboard(),
     )
+
+
+async def show_home(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not _is_authorized(update, context):
+        await _deny(update)
+        return
+    await _reply(update, "Главное меню:", reply_markup=home_keyboard())
 
 
 async def whoami(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -174,7 +238,14 @@ async def show_accounts(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         await _reply(update, f"Не удалось получить аккаунты: {exc}")
         return
     if not accounts:
-        await _reply(update, "Аккаунтов пока нет. Добавление: /add_account")
+        await _reply(
+            update,
+            "Аккаунтов пока нет. Сначала положите готовый Telethon .session в каталог сессий.",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("➕ Добавить .session", callback_data="flow:add_account")],
+                [InlineKeyboardButton("← Главное меню", callback_data="menu:home")],
+            ]),
+        )
         return
     lines = ["Аккаунты отправителя:"]
     buttons = []
@@ -198,8 +269,12 @@ async def show_accounts(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         )
     markup = InlineKeyboardMarkup(
         [buttons[index : index + 2] for index in range(0, len(buttons), 2)]
+        + [
+            [InlineKeyboardButton("➕ Добавить .session", callback_data="flow:add_account")],
+            [InlineKeyboardButton("← Главное меню", callback_data="menu:home")],
+        ]
     )
-    await _reply(update, "\n".join(lines) + "\n\nДобавить: /add_account", reply_markup=markup)
+    await _reply(update, "\n".join(lines), reply_markup=markup)
 
 
 async def show_history(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -224,7 +299,10 @@ async def show_history(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     await _reply(
         update,
         "Выберите аккаунт. История будет показана по московскому времени:",
-        reply_markup=InlineKeyboardMarkup([[button] for button in buttons]),
+        reply_markup=InlineKeyboardMarkup(
+            [[button] for button in buttons]
+            + [[InlineKeyboardButton("← Главное меню", callback_data="menu:home")]]
+        ),
     )
 
 
@@ -253,7 +331,14 @@ async def show_account_history(
             f"#{entry['id']} · {format_moscow_time(entry['created_at'])} · {status}{attachment}\n"
             f"→ @{entry['recipient']}: {content}"
         )
-    await _reply(update, "\n\n".join(lines))
+    await _reply(
+        update,
+        "\n\n".join(lines),
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("← К истории", callback_data="menu:history")],
+            [InlineKeyboardButton("← Главное меню", callback_data="menu:home")],
+        ]),
+    )
 
 
 async def show_campaign(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -266,7 +351,14 @@ async def show_campaign(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         await _reply(update, f"Не удалось получить расписание: {exc}")
         return
     if not config:
-        await _reply(update, "Расписание не настроено. Начать настройку: /campaign_setup")
+        await _reply(
+            update,
+            "Кампания ещё не настроена.",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("⚙️ Настроить", callback_data="flow:campaign")],
+                [InlineKeyboardButton("← Главное меню", callback_data="menu:home")],
+            ]),
+        )
         return
     state = "включено" if config["enabled"] else "выключено"
     slots = "; ".join(
@@ -286,11 +378,15 @@ async def show_campaign(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     prompt = config.get("reply_prompt")
     if prompt:
         text += "\n\nPrompt:\n" + (prompt[:2500] + ("…" if len(prompt) > 2500 else ""))
-    text += (
-        "\n\nНастройка: /campaign_setup · /campaign_enable · /campaign_disable"
-        "\nАвтоответы: /auto_reply_enable · /auto_reply_disable"
+    await _reply(
+        update,
+        text[:3900],
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("⏸ Выключить" if config["enabled"] else "▶️ Включить", callback_data="campaign:disable" if config["enabled"] else "campaign:enable")],
+            [InlineKeyboardButton("⚙️ Настроить заново", callback_data="flow:campaign")],
+            [InlineKeyboardButton("← Главное меню", callback_data="menu:home")],
+        ]),
     )
-    await _reply(update, text[:3900])
 
 
 async def render_dialogue_proposals(
@@ -352,26 +448,20 @@ async def menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         return
     query = update.callback_query
     value = query.data or ""
-    if value == "menu:accounts":
+    if value == "menu:home":
+        await show_home(update, context)
+    elif value == "menu:accounts":
         await show_accounts(update, context)
     elif value == "menu:history":
         await show_history(update, context)
     elif value == "menu:campaign":
         await show_campaign(update, context)
-    elif value == "menu:personas":
-        await query.answer()
-        await query.message.reply_text(
-            "Настройка личности аккаунта: /persona_setup\n"
-            "AI-preview из 5 реплик: /dialogue_preview"
-        )
-    elif value == "menu:dialogue":
-        await query.answer()
-        await query.message.reply_text("Создать черновой диалог: /dialogue_preview")
+    elif value == "menu:activation":
+        await show_activation_menu(update, context)
+    elif value == "menu:auto_reply":
+        await show_auto_reply_menu(update, context)
     elif value.startswith("proposals:"):
         await render_dialogue_proposals(update, context, value.split(":", 1)[1])
-    elif value == "menu:send":
-        await query.answer()
-        await query.message.reply_text("Чтобы выбрать аккаунт и отправить сообщение, используйте /send")
     elif value.startswith("history:"):
         await show_account_history(update, context, value.split(":", 1)[1])
     elif value.startswith("account:"):
@@ -389,6 +479,75 @@ async def menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
             await _reply(update, f"Ошибка обновления аккаунта: {exc}")
 
 
+async def show_auto_reply_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    try:
+        campaign = await _api(context).get_campaign()
+    except Exception as exc:
+        await _reply(update, f"Не удалось загрузить настройки: {exc}")
+        return
+    if not campaign:
+        await _reply(
+            update,
+            "Сначала создайте кампанию и общий пул шаблонов.",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("Настроить кампанию", callback_data="flow:campaign")],
+                [InlineKeyboardButton("← Главное меню", callback_data="menu:home")],
+            ]),
+        )
+        return
+    pending = 0
+    try:
+        pending = (await _api(context).auto_reply_status()).get("pending", 0)
+    except Exception:
+        pass
+    enabled = bool(campaign.get("auto_reply_enabled"))
+    prompt = (campaign.get("reply_prompt") or "").strip()
+    text = (
+        f"💬 Автоответы: {'включены' if enabled else 'выключены'}\n"
+        f"Задержка: {campaign.get('reply_delay_min_minutes', 2)}–"
+        f"{campaign.get('reply_delay_max_minutes', 180)} минут\n"
+        f"В очереди: {pending}\n\n"
+        f"Полный системный промпт:\n{prompt[:2500] or 'не задан'}"
+    )
+    toggle = "auto:disable" if enabled else "auto:enable"
+    toggle_label = "⏸ Выключить" if enabled else "▶️ Включить"
+    await _reply(
+        update,
+        text,
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton(toggle_label, callback_data=toggle)],
+            [InlineKeyboardButton("✏️ Изменить полный промпт", callback_data="flow:reply_prompt")],
+            [InlineKeyboardButton("⏱ Изменить задержку", callback_data="flow:reply_delay")],
+            [InlineKeyboardButton("← Главное меню", callback_data="menu:home")],
+        ]),
+    )
+
+
+async def show_activation_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    try:
+        data = await _api(context).activation_status()
+    except Exception as exc:
+        await _reply(update, f"Не удалось получить статус: {exc}")
+        return
+    rules = data.get("rules") or {}
+    rules_text = ", ".join(f"{pack}×{value}" for pack, value in rules.items()) or "не заданы"
+    enabled = bool(data.get("enabled"))
+    await _reply(
+        update,
+        "⚡ Отправка по активациям\n"
+        f"Статус: {'включена' if enabled else 'выключена'}\n"
+        f"Endpoint: {'настроен' if data.get('endpoint_configured') else 'не настроен'}\n"
+        f"Правила: {rules_text}\n"
+        f"Очередь: {data.get('pending', 0)}",
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("⏸ Выключить" if enabled else "▶️ Включить", callback_data="activation:disable" if enabled else "activation:enable")],
+            [InlineKeyboardButton("🔢 Изменить пороги", callback_data="flow:activation_rules")],
+            [InlineKeyboardButton("🔄 Обновить", callback_data="menu:activation")],
+            [InlineKeyboardButton("← Главное меню", callback_data="menu:home")],
+        ]),
+    )
+
+
 async def add_account_start(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE,
@@ -396,11 +555,41 @@ async def add_account_start(
     if not _is_authorized(update, context):
         await _deny(update)
         return ConversationHandler.END
-    await update.effective_message.reply_text(
-        "Введите ключ сессии (например business). На сервере должен существовать "
-        "авторизованный файл TELEGRAM_SESSION_DIR/business.session в формате Telethon. "
-        "Для отмены: /cancel"
-    )
+    if update.callback_query:
+        await update.callback_query.answer()
+    session_dir = Path(context.application.bot_data["session_dir"])
+    try:
+        registered = {item["account_key"] for item in await _api(context).accounts()}
+    except Exception as exc:
+        await update.effective_message.reply_text(f"Не удалось получить аккаунты: {exc}")
+        return ConversationHandler.END
+    available = [
+        path.stem
+        for path in sorted(session_dir.glob("*.session"))
+        if ACCOUNT_KEY_PATTERN.fullmatch(path.stem) and path.stem not in registered
+    ]
+    if available:
+        buttons = [
+            [InlineKeyboardButton(f"📄 {key}.session", callback_data=f"session:{key}")]
+            for key in available[:30]
+        ]
+        buttons.extend([
+            [InlineKeyboardButton("Ввести ключ вручную", callback_data="session:manual")],
+            [InlineKeyboardButton("Отмена", callback_data="flow:cancel")],
+        ])
+        await update.effective_message.reply_text(
+            "Выберите готовую авторизованную Telethon-сессию:",
+            reply_markup=InlineKeyboardMarkup(buttons),
+        )
+    else:
+        await update.effective_message.reply_text(
+            "Новых .session файлов не найдено. Положите готовый авторизованный "
+            f"Telethon-файл в {session_dir} или введите его ключ вручную.",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("Ввести ключ вручную", callback_data="session:manual")],
+                [InlineKeyboardButton("Отмена", callback_data="flow:cancel")],
+            ]),
+        )
     return ADD_ACCOUNT_KEY
 
 
@@ -408,7 +597,21 @@ async def add_account_key(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     if not _is_authorized(update, context):
         await _deny(update)
         return ConversationHandler.END
-    account_key = update.effective_message.text.strip().lower()
+    if update.callback_query:
+        query = update.callback_query
+        await query.answer()
+        selected = query.data.split(":", 1)[1]
+        if selected == "manual":
+            await query.edit_message_text(
+                "Введите ключ готового файла без суффикса .session, например business:",
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("Отмена", callback_data="flow:cancel")]
+                ]),
+            )
+            return ADD_ACCOUNT_KEY
+        account_key = selected
+    else:
+        account_key = update.effective_message.text.strip().lower()
     if not ACCOUNT_KEY_PATTERN.fullmatch(account_key):
         await update.effective_message.reply_text(
             "Допустимы латинские буквы, цифры, _ и -. Повторите ввод:"
@@ -421,7 +624,12 @@ async def add_account_key(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         )
         return ADD_ACCOUNT_KEY
     context.user_data["new_account_key"] = account_key
-    await update.effective_message.reply_text("Введите подпись аккаунта для списка:")
+    await update.effective_message.reply_text(
+        "Введите подпись аккаунта для списка:",
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("Отмена", callback_data="flow:cancel")]
+        ]),
+    )
     return ADD_ACCOUNT_LABEL
 
 
@@ -442,7 +650,88 @@ async def add_account_label(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         await update.effective_message.reply_text(f"Не удалось добавить аккаунт: {exc}")
         return ConversationHandler.END
     await update.effective_message.reply_text(
-        f"Добавлен аккаунт #{account['account_index']}: {account['label']} ({account['account_key']})."
+        f"Добавлен аккаунт #{account['account_index']}: {account['label']} "
+        f"({account['account_key']}).\n\nОцените грамотность: 1 — много ошибок, "
+        "5 — пишет грамотно.",
+        reply_markup=trait_keyboard(),
+    )
+    context.user_data["profile_account_key"] = account["account_key"]
+    context.user_data["profile_traits"] = {}
+    context.user_data["trait_position"] = 0
+    return ACCOUNT_TRAIT_LITERACY
+
+
+async def account_trait_chosen(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    if not _is_authorized(update, context):
+        await _deny(update)
+        return ConversationHandler.END
+    query = update.callback_query
+    await query.answer()
+    value = int(query.data.split(":", 1)[1])
+    position = int(context.user_data.get("trait_position", 0))
+    field, _, _ = TRAITS[position]
+    context.user_data["profile_traits"][field] = value
+    position += 1
+    context.user_data["trait_position"] = position
+    if position < len(TRAITS):
+        _, title, state = TRAITS[position]
+        descriptions = {
+            "Резкость": "1 — мягкий, 5 — очень прямой и напористый",
+            "Дружелюбность": "1 — холодный, 5 — очень тёплый",
+            "Разговорчивость": "1 — отвечает коротко, 5 — отвечает подробно",
+            "Юмор": "1 — серьёзный, 5 — часто шутит",
+            "Эмодзи": "1 — почти без эмодзи, 5 — использует часто",
+            "Инициативность": "1 — только отвечает, 5 — развивает разговор",
+        }
+        await query.edit_message_text(
+            f"{title}: {descriptions[title]}", reply_markup=trait_keyboard()
+        )
+        return state
+    await query.edit_message_text(
+        "Добавьте свободное описание личности и манеры общения или нажмите «Пропустить».",
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("Пропустить", callback_data="identity:skip")],
+            [InlineKeyboardButton("Отмена", callback_data="flow:cancel")],
+        ]),
+    )
+    return ACCOUNT_IDENTITY
+
+
+async def account_identity_entered(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+) -> int:
+    if not _is_authorized(update, context):
+        await _deny(update)
+        return ConversationHandler.END
+    identity = context.user_data.get("profile_existing", {}).get("identity_prompt", "")
+    if update.callback_query:
+        await update.callback_query.answer()
+    else:
+        identity = update.effective_message.text.strip()
+        if len(identity) > 2000:
+            await update.effective_message.reply_text("Описание должно быть до 2000 символов:")
+            return ACCOUNT_IDENTITY
+    traits = context.user_data.get("profile_traits", {})
+    literacy = int(traits.get("literacy_level", 5))
+    accuracy_by_level = {1: 68, 2: 78, 3: 88, 4: 95, 5: 100}
+    profile = {
+        **traits,
+        "identity_prompt": identity,
+        "word_accuracy_percent": accuracy_by_level[literacy],
+        "punctuation_accuracy_percent": accuracy_by_level[literacy],
+    }
+    account_key = context.user_data["profile_account_key"]
+    try:
+        await _api(context).save_account_persona(account_key, profile)
+    except Exception as exc:
+        await _reply(update, f"Аккаунт добавлен, но профиль не сохранился: {exc}")
+        return ConversationHandler.END
+    context.user_data.clear()
+    await _reply(
+        update,
+        f"Готово: аккаунт {account_key} и его индивидуальный профиль сохранены.",
+        reply_markup=home_keyboard(),
     )
     return ConversationHandler.END
 
@@ -451,13 +740,15 @@ async def send_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     if not _is_authorized(update, context):
         await _deny(update)
         return ConversationHandler.END
+    if update.callback_query:
+        await update.callback_query.answer()
     try:
         accounts = [account for account in await _api(context).accounts() if account["enabled"]]
     except Exception as exc:
         await update.effective_message.reply_text(f"Не удалось получить аккаунты: {exc}")
         return ConversationHandler.END
     if not accounts:
-        await update.effective_message.reply_text("Нет активных аккаунтов. Добавьте через /add_account")
+        await update.effective_message.reply_text("Нет активных аккаунтов. Добавьте их в разделе «Аккаунты».")
         return ConversationHandler.END
     keyboard = [
         [InlineKeyboardButton(
@@ -468,7 +759,9 @@ async def send_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     ]
     await update.effective_message.reply_text(
         "Выберите аккаунт отправителя:",
-        reply_markup=InlineKeyboardMarkup(keyboard),
+        reply_markup=InlineKeyboardMarkup(
+            keyboard + [[InlineKeyboardButton("Отмена", callback_data="flow:cancel")]]
+        ),
     )
     return SEND_ACCOUNT
 
@@ -480,7 +773,12 @@ async def send_account_chosen(update: Update, context: ContextTypes.DEFAULT_TYPE
     query = update.callback_query
     await query.answer()
     context.user_data["send_account_index"] = int(query.data.split(":", 1)[1])
-    await query.edit_message_text("Введите текст сообщения или /cancel для отмены:")
+    await query.edit_message_text(
+        "Введите текст сообщения:",
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("Отмена", callback_data="flow:cancel")]
+        ]),
+    )
     return SEND_TEXT
 
 
@@ -493,7 +791,13 @@ async def send_text_entered(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         await update.effective_message.reply_text("Текст должен быть от 1 до 4096 символов:")
         return SEND_TEXT
     context.user_data["send_text"] = text
-    await update.effective_message.reply_text("Пришлите JPEG или /skip для отправки только текста.")
+    await update.effective_message.reply_text(
+        "Пришлите JPEG или отправьте только текст:",
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("Отправить без фото", callback_data="send:skip")],
+            [InlineKeyboardButton("Отмена", callback_data="flow:cancel")],
+        ]),
+    )
     return SEND_ATTACHMENT
 
 
@@ -520,7 +824,8 @@ async def _deliver_from_bot(
         await update.effective_message.reply_text(f"Отправка не прошла: {exc}")
         return ConversationHandler.END
     await update.effective_message.reply_text(
-        f"Отправлено через аккаунт #{result['account_index']} ({result['sender_account']})."
+        f"Отправлено через аккаунт #{result['account_index']} ({result['sender_account']}).",
+        reply_markup=home_keyboard(),
     )
     context.user_data.pop("send_text", None)
     context.user_data.pop("send_account_index", None)
@@ -531,6 +836,8 @@ async def send_text_only(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     if not _is_authorized(update, context):
         await _deny(update)
         return ConversationHandler.END
+    if update.callback_query:
+        await update.callback_query.answer()
     return await _deliver_from_bot(update, context)
 
 
@@ -555,16 +862,163 @@ async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         await _deny(update)
         return ConversationHandler.END
     context.user_data.clear()
-    await update.effective_message.reply_text("Действие отменено.")
+    if update.callback_query:
+        await update.callback_query.answer()
+        await update.callback_query.edit_message_text(
+            "Действие отменено.", reply_markup=home_keyboard()
+        )
+    else:
+        await update.effective_message.reply_text(
+            "Действие отменено.", reply_markup=home_keyboard()
+        )
     return ConversationHandler.END
+
+
+async def edit_reply_prompt_start(
+    update: Update, context: ContextTypes.DEFAULT_TYPE
+) -> int:
+    if not _is_authorized(update, context):
+        await _deny(update)
+        return ConversationHandler.END
+    query = update.callback_query
+    await query.answer()
+    await query.edit_message_text(
+        "Отправьте новый полный системный промпт (до 4000 символов). "
+        "Он будет использоваться целиком; профиль выбранного аккаунта добавится ниже него."
+    )
+    return EDIT_REPLY_PROMPT
+
+
+async def edit_reply_prompt_entered(
+    update: Update, context: ContextTypes.DEFAULT_TYPE
+) -> int:
+    prompt = update.effective_message.text.strip()
+    if not prompt or len(prompt) > 4000:
+        await update.effective_message.reply_text("Нужен непустой промпт до 4000 символов:")
+        return EDIT_REPLY_PROMPT
+    try:
+        campaign = await _api(context).get_campaign()
+        if not campaign:
+            raise RuntimeError("сначала настройте кампанию")
+        campaign["reply_prompt"] = prompt
+        await _api(context).save_campaign(campaign)
+    except Exception as exc:
+        await update.effective_message.reply_text(f"Не удалось сохранить промпт: {exc}")
+        return ConversationHandler.END
+    await update.effective_message.reply_text(
+        "Полный системный промпт сохранён.", reply_markup=home_keyboard()
+    )
+    return ConversationHandler.END
+
+
+async def edit_reply_delay_start(
+    update: Update, context: ContextTypes.DEFAULT_TYPE
+) -> int:
+    if not _is_authorized(update, context):
+        await _deny(update)
+        return ConversationHandler.END
+    query = update.callback_query
+    await query.answer()
+    await query.edit_message_text(
+        "Введите минимальную и максимальную задержку в минутах через пробел. "
+        "Например: 2 180"
+    )
+    return EDIT_REPLY_DELAY
+
+
+async def edit_reply_delay_entered(
+    update: Update, context: ContextTypes.DEFAULT_TYPE
+) -> int:
+    parts = update.effective_message.text.replace(",", " ").split()
+    try:
+        minimum, maximum = map(int, parts)
+    except (ValueError, TypeError):
+        await update.effective_message.reply_text("Введите два целых числа, например: 2 180")
+        return EDIT_REPLY_DELAY
+    if minimum < 0 or maximum > 1440 or minimum > maximum:
+        await update.effective_message.reply_text(
+            "Диапазон должен быть от 0 до 1440 минут, минимум не больше максимума:"
+        )
+        return EDIT_REPLY_DELAY
+    try:
+        campaign = await _api(context).get_campaign()
+        if not campaign:
+            raise RuntimeError("сначала настройте кампанию")
+        campaign["reply_delay_min_minutes"] = minimum
+        campaign["reply_delay_max_minutes"] = maximum
+        await _api(context).save_campaign(campaign)
+    except Exception as exc:
+        await update.effective_message.reply_text(f"Не удалось сохранить задержку: {exc}")
+        return ConversationHandler.END
+    await update.effective_message.reply_text(
+        f"Задержка автоответов: {minimum}–{maximum} минут.",
+        reply_markup=home_keyboard(),
+    )
+    return ConversationHandler.END
+
+
+async def edit_activation_rules_start(
+    update: Update, context: ContextTypes.DEFAULT_TYPE
+) -> int:
+    if not _is_authorized(update, context):
+        await _deny(update)
+        return ConversationHandler.END
+    query = update.callback_query
+    await query.answer()
+    await query.edit_message_text(
+        "Введите правила, например:\n8100x10,3650x4,1800x0,660x0,325x0,60x0\n"
+        "Ноль отключает пакет."
+    )
+    return EDIT_ACTIVATION_RULES
+
+
+async def edit_activation_rules_entered(
+    update: Update, context: ContextTypes.DEFAULT_TYPE
+) -> int:
+    try:
+        rules = parse_activation_rules(update.effective_message.text)
+        campaign = await _api(context).get_campaign()
+        if not campaign:
+            raise RuntimeError("сначала настройте кампанию")
+        campaign["activation_rules"] = rules
+        await _api(context).save_campaign(campaign)
+    except Exception as exc:
+        await update.effective_message.reply_text(f"Не удалось сохранить правила: {exc}")
+        return EDIT_ACTIVATION_RULES
+    await update.effective_message.reply_text(
+        "Пороги активаций сохранены.", reply_markup=home_keyboard()
+    )
+    return ConversationHandler.END
+
+
+async def inline_toggle_callback(
+    update: Update, context: ContextTypes.DEFAULT_TYPE
+) -> None:
+    if not _is_authorized(update, context):
+        await _deny(update)
+        return
+    query = update.callback_query
+    await query.answer()
+    action = query.data or ""
+    if action.startswith("auto:"):
+        await set_auto_reply_enabled(update, context, action.endswith("enable"))
+    elif action.startswith("activation:"):
+        await set_activation_enabled(update, context, action.endswith("enable"))
+    elif action.startswith("campaign:"):
+        await set_campaign_enabled(update, context, action.endswith("enable"))
 
 
 async def campaign_setup_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     if not _is_authorized(update, context):
         await _deny(update)
         return ConversationHandler.END
+    if update.callback_query:
+        await update.callback_query.answer()
     await update.effective_message.reply_text(
-        "Введите дату начала в формате YYYY-MM-DD. Все слоты будут по Москве."
+        "Введите дату начала в формате YYYY-MM-DD. Все слоты будут по Москве.",
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("Отмена", callback_data="flow:cancel")]
+        ]),
     )
     return CAMPAIGN_START_DATE
 
@@ -596,10 +1050,33 @@ async def campaign_phrases(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         return CAMPAIGN_PHRASES
     context.user_data["campaign_phrases"] = phrases
     await update.effective_message.reply_text(
-        "Введите системный prompt для автоответов на входящие сообщения центрального "
-        "тестового аккаунта. До 4000 символов. Для пропуска отправьте /skip_prompt."
+        "Введите полный системный промпт для автоответов (до 4000 символов) "
+        "или используйте безопасный базовый вариант.",
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("Использовать базовый промпт", callback_data="prompt:default")],
+            [InlineKeyboardButton("Без автоответов", callback_data="prompt:skip")],
+            [InlineKeyboardButton("Отмена", callback_data="flow:cancel")],
+        ]),
     )
     return CAMPAIGN_PROMPT
+
+
+async def campaign_prompt_choice(
+    update: Update, context: ContextTypes.DEFAULT_TYPE
+) -> int:
+    if not _is_authorized(update, context):
+        await _deny(update)
+        return ConversationHandler.END
+    query = update.callback_query
+    await query.answer()
+    context.user_data["campaign_reply_prompt"] = (
+        DEFAULT_REPLY_PROMPT if query.data == "prompt:default" else None
+    )
+    await query.edit_message_text(
+        "Теперь задайте слоты для дней 1, 2 и 3 через |. Пример: "
+        "10:00 | 10:00,15:00 | 10:00"
+    )
+    return CAMPAIGN_SLOTS
 
 
 async def campaign_prompt(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -645,6 +1122,8 @@ async def campaign_slots(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         "enabled": False,
         "auto_reply_enabled": False,
         "reply_prompt": context.user_data.get("campaign_reply_prompt"),
+        "reply_delay_min_minutes": 2,
+        "reply_delay_max_minutes": 180,
         "start_date": context.user_data["campaign_start_date"],
         "recipient": config["recipient"],
         "phrases": context.user_data["campaign_phrases"],
@@ -657,8 +1136,9 @@ async def campaign_slots(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         return ConversationHandler.END
     context.user_data.clear()
     await update.effective_message.reply_text(
-        "Пул, prompt и расписание сохранены выключенными. Проверьте /campaign; "
-        "плановые сообщения: /campaign_enable, автоответы: /auto_reply_enable."
+        "Пул, prompt и расписание сохранены выключенными; "
+        "включить нужные режимы можно кнопками в главном меню.",
+        reply_markup=home_keyboard(),
     )
     return ConversationHandler.END
 
@@ -674,11 +1154,11 @@ async def set_auto_reply_enabled(
     try:
         campaign = await _api(context).get_campaign()
         if not campaign:
-            await update.effective_message.reply_text("Сначала настройте кампанию: /campaign_setup")
+            await update.effective_message.reply_text("Сначала настройте кампанию в главном меню.")
             return
         if enabled and not (campaign.get("reply_prompt") or "").strip():
             await update.effective_message.reply_text(
-                "В кампании нет prompt. Запустите /campaign_setup и задайте prompt."
+                "В кампании нет prompt. Откройте «Автоответы» и задайте его."
             )
             return
         campaign["auto_reply_enabled"] = enabled
@@ -704,6 +1184,8 @@ async def persona_setup_start(update: Update, context: ContextTypes.DEFAULT_TYPE
     if not _is_authorized(update, context):
         await _deny(update)
         return ConversationHandler.END
+    if update.callback_query:
+        await update.callback_query.answer()
     accounts = await _api(context).accounts()
     buttons = [
         InlineKeyboardButton(
@@ -713,7 +1195,7 @@ async def persona_setup_start(update: Update, context: ContextTypes.DEFAULT_TYPE
         for account in accounts
     ]
     if not buttons:
-        await update.effective_message.reply_text("Сначала добавьте аккаунт через /add_account")
+        await update.effective_message.reply_text("Сначала добавьте аккаунт в разделе «Аккаунты».")
         return ConversationHandler.END
     await update.effective_message.reply_text(
         "Выберите аккаунт для настройки личности:",
@@ -729,18 +1211,21 @@ async def persona_account_chosen(update: Update, context: ContextTypes.DEFAULT_T
     query = update.callback_query
     await query.answer()
     account_key = query.data.split(":", 1)[1]
-    context.user_data["persona_account_key"] = account_key
     try:
         profile = await _api(context).account_persona(account_key)
     except Exception as exc:
         await query.edit_message_text(f"Не удалось загрузить профиль: {exc}")
         return ConversationHandler.END
-    context.user_data["persona_existing"] = profile
+    context.user_data["profile_account_key"] = account_key
+    context.user_data["profile_existing"] = profile
+    context.user_data["profile_traits"] = {}
+    context.user_data["trait_position"] = 0
     await query.edit_message_text(
-        "Опишите личность и манеру общения (до 2000 символов). "
-        "Можно отправить точку, если описание не нужно."
+        f"Грамотность сейчас: {profile.get('literacy_level', 5)} из 5. "
+        "Выберите новое значение:",
+        reply_markup=trait_keyboard(),
     )
-    return PERSONA_PROMPT
+    return ACCOUNT_TRAIT_LITERACY
 
 
 async def persona_prompt_entered(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -780,10 +1265,12 @@ async def persona_metrics_entered(update: Update, context: ContextTypes.DEFAULT_
         await update.effective_message.reply_text("Проценты должны быть от 0 до 100:")
         return PERSONA_METRICS
     account_key = context.user_data["persona_account_key"]
+    existing = context.user_data.get("persona_existing", {})
     try:
         await _api(context).save_account_persona(
             account_key,
             {
+                **existing,
                 "identity_prompt": context.user_data["persona_identity_prompt"],
                 "word_accuracy_percent": word_accuracy,
                 "punctuation_accuracy_percent": punctuation_accuracy,
@@ -806,6 +1293,8 @@ async def dialogue_preview_start(update: Update, context: ContextTypes.DEFAULT_T
     if not _is_authorized(update, context):
         await _deny(update)
         return ConversationHandler.END
+    if update.callback_query:
+        await update.callback_query.answer()
     accounts = await _api(context).accounts()
     buttons = [
         InlineKeyboardButton(
@@ -815,7 +1304,7 @@ async def dialogue_preview_start(update: Update, context: ContextTypes.DEFAULT_T
         for account in accounts
     ]
     if not buttons:
-        await update.effective_message.reply_text("Сначала добавьте аккаунт через /add_account")
+        await update.effective_message.reply_text("Сначала добавьте аккаунт в разделе «Аккаунты».")
         return ConversationHandler.END
     await update.effective_message.reply_text(
         "Выберите личность для чернового диалога:",
@@ -904,7 +1393,7 @@ async def activation_rules_command(update: Update, context: ContextTypes.DEFAULT
     raw_rules = " ".join(context.args).strip()
     if not raw_rules:
         await update.effective_message.reply_text(
-            "Задайте множители для пакетов: /activation_rules "
+            "Задайте множители для пакетов: "
             "8100x10,3650x0,1800x5,660x0,325x0,60x0\n"
             "Ноль означает выключенный пакет. Порог сообщения = размер пакета × множитель."
         )
@@ -913,7 +1402,7 @@ async def activation_rules_command(update: Update, context: ContextTypes.DEFAULT
         rules = parse_activation_rules(raw_rules)
         campaign = await _api(context).get_campaign()
         if not campaign:
-            await update.effective_message.reply_text("Сначала настройте общий шаблон через /campaign_setup")
+            await update.effective_message.reply_text("Сначала настройте общий шаблон в разделе «Кампания».")
             return
         campaign["activation_rules"] = rules
         await _api(context).save_campaign(campaign)
@@ -939,10 +1428,10 @@ async def set_activation_enabled(
     try:
         campaign = await _api(context).get_campaign()
         if not campaign:
-            await update.effective_message.reply_text("Сначала настройте кампанию через /campaign_setup")
+            await update.effective_message.reply_text("Сначала настройте кампанию в главном меню.")
             return
         if enabled and not campaign.get("activation_rules"):
-            await update.effective_message.reply_text("Сначала задайте правила через /activation_rules")
+            await update.effective_message.reply_text("Сначала задайте правила кнопкой «Изменить пороги».")
             return
         if enabled:
             activation_status = await _api(context).activation_status()
@@ -1011,7 +1500,7 @@ async def set_campaign_enabled(
     try:
         campaign = await _api(context).get_campaign()
         if not campaign:
-            await update.effective_message.reply_text("Сначала настройте кампанию: /campaign_setup")
+            await update.effective_message.reply_text("Сначала настройте кампанию в главном меню.")
             return
         campaign["enabled"] = enabled
         await _api(context).save_campaign(campaign)
@@ -1044,24 +1533,6 @@ async def post_init(application: Application) -> None:
     await application.bot.set_my_commands(
         [
             BotCommand("start", "Открыть панель управления"),
-            BotCommand("accounts", "Список аккаунтов отправителя"),
-            BotCommand("add_account", "Добавить серверную Telethon-сессию"),
-            BotCommand("persona_setup", "Настроить профиль личности аккаунта"),
-            BotCommand("dialogue_preview", "Создать preview из пяти реплик"),
-            BotCommand("dialogues", "Посмотреть сохранённые preview"),
-            BotCommand("send", "Отправить текст или фото"),
-            BotCommand("history", "Посмотреть историю отправок"),
-            BotCommand("campaign", "Показать расписание"),
-            BotCommand("campaign_setup", "Настроить расписание"),
-            BotCommand("campaign_enable", "Включить расписание"),
-            BotCommand("campaign_disable", "Выключить расписание"),
-            BotCommand("activation_rules", "Задать пороги пакетов"),
-            BotCommand("activation_enable", "Включить триггер активаций"),
-            BotCommand("activation_disable", "Выключить триггер активаций"),
-            BotCommand("activation_status", "Статус синхронизации пакетов"),
-            BotCommand("auto_reply_enable", "Включить автоответы тестовому аккаунту"),
-            BotCommand("auto_reply_disable", "Выключить автоответы"),
-            BotCommand("whoami", "Показать свой Telegram user ID"),
         ]
     )
     application.bot_data["scheduler_task"] = asyncio.create_task(scheduler_loop(application))
@@ -1116,21 +1587,34 @@ def build_application() -> Application:
             CommandHandler("campaign_setup", campaign_setup_start),
             CommandHandler("persona_setup", persona_setup_start),
             CommandHandler("dialogue_preview", dialogue_preview_start),
+            CallbackQueryHandler(add_account_start, pattern=r"^flow:add_account$"),
+            CallbackQueryHandler(send_start, pattern=r"^flow:send$"),
+            CallbackQueryHandler(campaign_setup_start, pattern=r"^flow:campaign$"),
+            CallbackQueryHandler(persona_setup_start, pattern=r"^flow:persona$"),
+            CallbackQueryHandler(dialogue_preview_start, pattern=r"^flow:dialogue$"),
+            CallbackQueryHandler(edit_reply_prompt_start, pattern=r"^flow:reply_prompt$"),
+            CallbackQueryHandler(edit_reply_delay_start, pattern=r"^flow:reply_delay$"),
+            CallbackQueryHandler(edit_activation_rules_start, pattern=r"^flow:activation_rules$"),
         ],
         states={
-            ADD_ACCOUNT_KEY: [MessageHandler(filters.TEXT & ~filters.COMMAND, add_account_key)],
+            ADD_ACCOUNT_KEY: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, add_account_key),
+                CallbackQueryHandler(add_account_key, pattern=r"^session:[a-zA-Z0-9_-]+$"),
+            ],
             ADD_ACCOUNT_LABEL: [MessageHandler(filters.TEXT & ~filters.COMMAND, add_account_label)],
             SEND_ACCOUNT: [CallbackQueryHandler(send_account_chosen, pattern=r"^sendacct:\d+$")],
             SEND_TEXT: [MessageHandler(filters.TEXT & ~filters.COMMAND, send_text_entered)],
             SEND_ATTACHMENT: [
                 MessageHandler(filters.PHOTO, send_photo),
                 CommandHandler("skip", send_text_only),
+                CallbackQueryHandler(send_text_only, pattern=r"^send:skip$"),
             ],
             CAMPAIGN_START_DATE: [MessageHandler(filters.TEXT & ~filters.COMMAND, campaign_start_date)],
             CAMPAIGN_PHRASES: [MessageHandler(filters.TEXT & ~filters.COMMAND, campaign_phrases)],
             CAMPAIGN_PROMPT: [
                 MessageHandler(filters.TEXT & ~filters.COMMAND, campaign_prompt),
                 CommandHandler("skip_prompt", campaign_prompt_skip),
+                CallbackQueryHandler(campaign_prompt_choice, pattern=r"^prompt:(default|skip)$"),
             ],
             CAMPAIGN_SLOTS: [MessageHandler(filters.TEXT & ~filters.COMMAND, campaign_slots)],
             PERSONA_ACCOUNT: [
@@ -1149,8 +1633,25 @@ def build_application() -> Application:
             ],
             DIALOGUE_TASK: [MessageHandler(filters.TEXT & ~filters.COMMAND, dialogue_task_entered)],
             DIALOGUE_TARGETS: [MessageHandler(filters.TEXT & ~filters.COMMAND, dialogue_targets_entered)],
+            ACCOUNT_TRAIT_LITERACY: [CallbackQueryHandler(account_trait_chosen, pattern=r"^trait:[1-5]$")],
+            ACCOUNT_TRAIT_AGGRESSION: [CallbackQueryHandler(account_trait_chosen, pattern=r"^trait:[1-5]$")],
+            ACCOUNT_TRAIT_FRIENDLINESS: [CallbackQueryHandler(account_trait_chosen, pattern=r"^trait:[1-5]$")],
+            ACCOUNT_TRAIT_VERBOSITY: [CallbackQueryHandler(account_trait_chosen, pattern=r"^trait:[1-5]$")],
+            ACCOUNT_TRAIT_HUMOR: [CallbackQueryHandler(account_trait_chosen, pattern=r"^trait:[1-5]$")],
+            ACCOUNT_TRAIT_EMOJI: [CallbackQueryHandler(account_trait_chosen, pattern=r"^trait:[1-5]$")],
+            ACCOUNT_TRAIT_INITIATIVE: [CallbackQueryHandler(account_trait_chosen, pattern=r"^trait:[1-5]$")],
+            ACCOUNT_IDENTITY: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, account_identity_entered),
+                CallbackQueryHandler(account_identity_entered, pattern=r"^identity:skip$"),
+            ],
+            EDIT_REPLY_PROMPT: [MessageHandler(filters.TEXT & ~filters.COMMAND, edit_reply_prompt_entered)],
+            EDIT_REPLY_DELAY: [MessageHandler(filters.TEXT & ~filters.COMMAND, edit_reply_delay_entered)],
+            EDIT_ACTIVATION_RULES: [MessageHandler(filters.TEXT & ~filters.COMMAND, edit_activation_rules_entered)],
         },
-        fallbacks=[CommandHandler("cancel", cancel)],
+        fallbacks=[
+            CommandHandler("cancel", cancel),
+            CallbackQueryHandler(cancel, pattern=r"^flow:cancel$"),
+        ],
         per_message=False,
     )
     application.add_handler(conversation)
@@ -1172,6 +1673,12 @@ def build_application() -> Application:
         CallbackQueryHandler(
             menu_callback,
             pattern=r"^(menu:|history:|account:|proposals:)",
+        )
+    )
+    application.add_handler(
+        CallbackQueryHandler(
+            inline_toggle_callback,
+            pattern=r"^(auto:|activation:|campaign:)(enable|disable)$",
         )
     )
     return application

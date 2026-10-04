@@ -155,3 +155,6 @@ class ApiClient:
 
     async def activation_status(self) -> Dict[str, Any]:
         return await self.request("GET", "/api/v1/activations/status")
+
+    async def auto_reply_status(self) -> Dict[str, Any]:
+        return await self.request("GET", "/api/v1/auto-replies/status")

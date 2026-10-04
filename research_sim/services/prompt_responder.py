@@ -37,8 +37,7 @@ class PromptResponder:
                         ],
                         {
                             "role": "user",
-                            "content": "Ответь на последнее сообщение центрального "
-                            "тестового аккаунта:\n" + incoming_text,
+                            "content": incoming_text,
                         },
                     ],
                     "temperature": 0.7,

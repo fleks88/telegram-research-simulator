@@ -56,6 +56,19 @@ CREATE TABLE IF NOT EXISTS received_messages (
     UNIQUE (account_key, telegram_message_id)
 );
 
+CREATE TABLE IF NOT EXISTS pending_auto_replies (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    account_key TEXT NOT NULL,
+    telegram_message_id INTEGER NOT NULL,
+    due_at REAL NOT NULL,
+    status TEXT NOT NULL DEFAULT 'queued'
+        CHECK (status IN ('queued', 'processing', 'sent', 'failed', 'cancelled')),
+    created_at REAL NOT NULL,
+    processed_at REAL,
+    error TEXT,
+    UNIQUE (account_key, telegram_message_id)
+);
+
 CREATE TABLE IF NOT EXISTS sender_personas (
     account_key TEXT PRIMARY KEY REFERENCES telegram_accounts(account_key) ON DELETE CASCADE,
     persona_json TEXT NOT NULL,
@@ -82,6 +95,9 @@ WHERE campaign_id IS NOT NULL;
 
 CREATE INDEX IF NOT EXISTS idx_message_delivery_recipient_time
 ON message_deliveries(recipient, created_at DESC);
+
+CREATE INDEX IF NOT EXISTS idx_pending_auto_replies_due
+ON pending_auto_replies(status, due_at);
 
 """
 

@@ -80,6 +80,8 @@ class CampaignService:
                 )
         config.setdefault("auto_reply_enabled", False)
         config.setdefault("reply_prompt", None)
+        config.setdefault("reply_delay_min_minutes", 2)
+        config.setdefault("reply_delay_max_minutes", 180)
         config.setdefault("activation_enabled", False)
         config.setdefault("activation_rules", {})
         if not isinstance(config["activation_rules"], dict):
@@ -100,6 +102,13 @@ class CampaignService:
             raise ValueError("reply_prompt is required when automatic replies are enabled")
         if config["reply_prompt"] is not None and len(config["reply_prompt"]) > 4000:
             raise ValueError("reply_prompt must be 4000 characters or fewer")
+        if not (
+            0 <= int(config["reply_delay_min_minutes"]) <= 1440
+            and 0 <= int(config["reply_delay_max_minutes"]) <= 1440
+        ):
+            raise ValueError("reply delays must be between 0 and 1440 minutes")
+        if config["reply_delay_min_minutes"] > config["reply_delay_max_minutes"]:
+            raise ValueError("reply_delay_min_minutes must not exceed reply_delay_max_minutes")
         self.requests.save_campaign_settings(config)
         return config
 
