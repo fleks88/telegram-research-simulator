@@ -6,6 +6,8 @@ from typing import Optional
 from ..database.requests import DatabaseRequests
 from ..integrations.telegram import TelethonSender
 from ..settings import Settings, normalize_username
+from .personas import PersonaService
+from .prompt_responder import PromptResponder
 
 
 class RecipientNotAllowed(ValueError):
@@ -40,10 +42,14 @@ class MessagingService:
         settings: Settings,
         requests: DatabaseRequests,
         sender: TelethonSender,
+        personas: PersonaService | None = None,
+        prompt_responder: PromptResponder | None = None,
     ) -> None:
         self.settings = settings
         self.requests = requests
         self.sender = sender
+        self.personas = personas or PersonaService(requests)
+        self.prompt_responder = prompt_responder
 
     def validate_recipient(self, recipient: str) -> str:
         normalized = normalize_username(recipient)
@@ -61,6 +67,7 @@ class MessagingService:
         campaign_slot: Optional[str] = None,
         sender_account_index: Optional[int] = None,
         photo: Optional[bytes] = None,
+        apply_persona: bool = False,
     ) -> SendResult:
         normalized_recipient = self.validate_recipient(recipient)
         message = text.strip()
@@ -103,6 +110,21 @@ class MessagingService:
                 if sender_account_index is not None:
                     raise SenderAccountNotAvailable("sender account index does not exist")
                 raise RuntimeError("no active sender accounts are registered")
+            if campaign_id is not None or apply_persona:
+                persona = self.personas.get(sender_account.account_key)
+                if persona["identity_prompt"].strip() and self.prompt_responder is not None:
+                    message = await self.prompt_responder.rewrite_for_persona(
+                        identity_prompt=persona["identity_prompt"],
+                        text=message,
+                        word_accuracy_percent=persona["word_accuracy_percent"],
+                        punctuation_accuracy_percent=persona["punctuation_accuracy_percent"],
+                    )
+                message = self.personas.stylize_scheduled_text(
+                    sender_account.account_key,
+                    message,
+                    seed=f"{campaign_id}:{campaign_day}:{campaign_slot}:{sender_account.account_key}",
+                    profile=persona,
+                )
             self.requests.set_delivery_content(
                 delivery_id,
                 sender_account=sender_account.account_key,

@@ -19,7 +19,10 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from .schemas import (
     CampaignSettingsPayload,
     CampaignTickResponse,
+    DialogueProposalRequest,
+    DialogueProposalResponse,
     MessageHistoryItem,
+    PersonaProfilePayload,
     SenderAccountCreate,
     SenderAccountEnabledUpdate,
     SenderAccountResponse,
@@ -34,6 +37,7 @@ from ..services.messaging import (
     SendRateLimitExceeded,
     SenderAccountNotAvailable,
 )
+from ..services.persona_research import PersonaResearchService
 
 
 bearer_scheme = HTTPBearer(auto_error=False)
@@ -134,9 +138,91 @@ def get_sender_account_history(
     return [MessageHistoryItem(**item) for item in history]
 
 
+@protected_router.get("/accounts/{account_key}/persona", response_model=PersonaProfilePayload)
+def get_account_persona(
+    account_key: str,
+    request: Request,
+) -> PersonaProfilePayload:
+    try:
+        profile = request.app.state.persona_research_service.get_profile(account_key)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    return PersonaProfilePayload(**profile)
+
+
+@protected_router.put("/accounts/{account_key}/persona", response_model=PersonaProfilePayload)
+def put_account_persona(
+    account_key: str,
+    payload: PersonaProfilePayload,
+    request: Request,
+) -> PersonaProfilePayload:
+    service: PersonaResearchService = request.app.state.persona_research_service
+    try:
+        profile = service.save_profile(account_key, payload.model_dump())
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return PersonaProfilePayload(**profile)
+
+
+@protected_router.post("/research/dialogues/propose", response_model=DialogueProposalResponse)
+async def propose_research_dialogue(
+    payload: DialogueProposalRequest,
+    request: Request,
+) -> DialogueProposalResponse:
+    service: PersonaResearchService = request.app.state.persona_research_service
+    try:
+        result = await service.propose_dialogue(
+            account_key=payload.account_key,
+            task_prompt=payload.task_prompt,
+            target_replies=payload.target_replies,
+        )
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail="Dialogue proposal failed") from exc
+    return DialogueProposalResponse(**result)
+
+
+@protected_router.get("/accounts/{account_key}/dialogues")
+def get_account_dialogues(
+    account_key: str,
+    request: Request,
+    limit: int = Query(default=10, ge=1, le=50),
+) -> list[dict]:
+    try:
+        return request.app.state.persona_research_service.list_proposals(
+            account_key,
+            limit=limit,
+        )
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
 @protected_router.get("/settings/campaign")
 def get_campaign_settings(request: Request) -> Optional[dict]:
     return request.app.state.campaign_service.get_settings()
+
+
+@protected_router.get("/activations/status")
+def get_activation_status(request: Request) -> dict:
+    state = request.app.state.database_requests.get_activation_sync_state() or {}
+    config = request.app.state.campaign_service.get_settings() or {}
+    return {
+        "endpoint_configured": bool(request.app.state.settings.pack_activation_endpoint),
+        "enabled": bool(config.get("activation_enabled")),
+        "rules": config.get("activation_rules", {}),
+        "first_response": state.get("first_response"),
+        "last_response": state.get("last_response"),
+        "last_sync_at": state.get("last_sync_at"),
+        "remainders": state.get("remainders", {}),
+        "pending": len(state.get("pending", [])),
+    }
 
 
 @protected_router.put("/settings/campaign", response_model=CampaignSettingsPayload)

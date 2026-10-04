@@ -46,6 +46,33 @@ class SenderAccountEnabledUpdate(BaseModel):
     enabled: bool
 
 
+class PersonaProfilePayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    identity_prompt: str = Field(default="", max_length=2000)
+    word_accuracy_percent: int = Field(default=100, ge=0, le=100)
+    punctuation_accuracy_percent: int = Field(default=100, ge=0, le=100)
+
+
+class DialogueProposalRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    account_key: str = Field(min_length=1, max_length=48)
+    task_prompt: str = Field(min_length=1, max_length=2000)
+    target_replies: List[str] = Field(min_length=5, max_length=5)
+
+
+class DialogueTurn(BaseModel):
+    sender: str
+    target: str
+
+
+class DialogueProposalResponse(BaseModel):
+    proposal_id: int
+    account_key: str
+    dialogue: List[DialogueTurn]
+
+
 class CampaignSettingsPayload(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -57,6 +84,8 @@ class CampaignSettingsPayload(BaseModel):
     day_slots: Dict[int, List[str]]
     auto_reply_enabled: bool = False
     reply_prompt: Optional[str] = Field(default=None, max_length=4000)
+    activation_enabled: bool = False
+    activation_rules: Dict[int, int] = Field(default_factory=dict)
 
 
 class CampaignTickResponse(BaseModel):

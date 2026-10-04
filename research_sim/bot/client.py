@@ -49,6 +49,44 @@ class ApiClient:
             json={"enabled": enabled},
         )
 
+    async def account_persona(self, account_key: str) -> Dict[str, Any]:
+        return await self.request("GET", "/api/v1/accounts/" + account_key + "/persona")
+
+    async def save_account_persona(
+        self,
+        account_key: str,
+        profile: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        return await self.request(
+            "PUT",
+            "/api/v1/accounts/" + account_key + "/persona",
+            json=profile,
+        )
+
+    async def propose_dialogue(
+        self,
+        *,
+        account_key: str,
+        task_prompt: str,
+        target_replies: list[str],
+    ) -> Dict[str, Any]:
+        return await self.request(
+            "POST",
+            "/api/v1/research/dialogues/propose",
+            json={
+                "account_key": account_key,
+                "task_prompt": task_prompt,
+                "target_replies": target_replies,
+            },
+        )
+
+    async def account_dialogues(self, account_key: str, limit: int = 10) -> list[Dict[str, Any]]:
+        return await self.request(
+            "GET",
+            "/api/v1/accounts/" + account_key + "/dialogues",
+            params={"limit": limit},
+        )
+
     async def account_history(
         self,
         account_key: str,
@@ -114,3 +152,6 @@ class ApiClient:
 
     async def tick_campaign(self) -> Dict[str, Any]:
         return await self.request("POST", "/api/v1/campaign/tick")
+
+    async def activation_status(self) -> Dict[str, Any]:
+        return await self.request("GET", "/api/v1/activations/status")

@@ -14,6 +14,9 @@ from ..services.accounts import SenderAccountService
 from ..services.auto_reply import AutoReplyRuntime
 from ..services.messaging import MessagingService
 from ..services.prompt_responder import PromptResponder
+from ..services.persona_research import PersonaResearchService
+from ..services.personas import PersonaService
+from ..services.activation_sync import ActivationSyncService
 from ..settings import Settings
 
 
@@ -26,10 +29,14 @@ def create_app(
     app_database = database or Database(app_settings.database_path)
     database_requests = DatabaseRequests(app_database)
     telegram_sender = TelethonSender(app_settings, client_factory=client_factory)
+    persona_service = PersonaService(database_requests)
+    prompt_responder = PromptResponder(app_settings)
     messaging_service = MessagingService(
         app_settings,
         database_requests,
         telegram_sender,
+        personas=persona_service,
+        prompt_responder=prompt_responder,
     )
     campaign_service = CampaignService(
         app_settings,
@@ -37,21 +44,33 @@ def create_app(
         messaging_service,
     )
     account_service = SenderAccountService(database_requests)
+    persona_research_service = PersonaResearchService(
+        database_requests,
+        persona_service,
+        prompt_responder,
+    )
     auto_reply_runtime = AutoReplyRuntime(
         app_settings,
         database_requests,
         telegram_sender,
         messaging_service,
-        PromptResponder(app_settings),
+        prompt_responder,
+    )
+    activation_sync_service = ActivationSyncService(
+        app_settings,
+        database_requests,
+        messaging_service,
     )
 
     @asynccontextmanager
     async def lifespan(_: FastAPI):
         app_database.initialize()
         await auto_reply_runtime.start()
+        await activation_sync_service.start()
         try:
             yield
         finally:
+            await activation_sync_service.stop()
             await auto_reply_runtime.stop()
 
     app = FastAPI(
@@ -66,7 +85,9 @@ def create_app(
     app.state.messaging_service = messaging_service
     app.state.campaign_service = campaign_service
     app.state.account_service = account_service
+    app.state.persona_research_service = persona_research_service
     app.state.auto_reply_runtime = auto_reply_runtime
+    app.state.activation_sync_service = activation_sync_service
 
     @app.get("/health", response_model=HealthResponse, tags=["system"])
     def health() -> HealthResponse:

@@ -29,6 +29,83 @@ class DatabaseRequests:
             return None
         return CampaignSettingsRecord(config=json.loads(row["config_json"]))
 
+    def get_sender_persona(self, account_key: str) -> Optional[Dict[str, Any]]:
+        with self.database.connect() as connection:
+            row = connection.execute(
+                "SELECT persona_json FROM sender_personas WHERE account_key = ?",
+                (account_key,),
+            ).fetchone()
+        return json.loads(row["persona_json"]) if row is not None else None
+
+    def save_sender_persona(
+        self,
+        account_key: str,
+        persona: Dict[str, Any],
+    ) -> bool:
+        now = time.time()
+        serialized = json.dumps(persona, ensure_ascii=False, sort_keys=True)
+        with self.database.connect() as connection:
+            exists = connection.execute(
+                "SELECT 1 FROM telegram_accounts WHERE account_key = ?",
+                (account_key,),
+            ).fetchone()
+            if exists is None:
+                return False
+            connection.execute(
+                """INSERT INTO sender_personas (account_key, persona_json, updated_at)
+                   VALUES (?, ?, ?)
+                   ON CONFLICT(account_key) DO UPDATE SET
+                       persona_json = excluded.persona_json,
+                       updated_at = excluded.updated_at""",
+                (account_key, serialized, now),
+            )
+            return True
+
+    def save_dialogue_proposal(
+        self,
+        account_key: str,
+        prompt: str,
+        dialogue: list[Dict[str, str]],
+    ) -> int:
+        now = time.time()
+        with self.database.connect() as connection:
+            cursor = connection.execute(
+                """INSERT INTO dialogue_proposals
+                   (account_key, prompt, dialogue_json, created_at)
+                   VALUES (?, ?, ?, ?)""",
+                (
+                    account_key,
+                    prompt,
+                    json.dumps(dialogue, ensure_ascii=False),
+                    now,
+                ),
+            )
+            return int(cursor.lastrowid)
+
+    def list_dialogue_proposals(
+        self,
+        account_key: str,
+        *,
+        limit: int = 10,
+    ) -> list[Dict[str, Any]]:
+        with self.database.connect() as connection:
+            rows = connection.execute(
+                """SELECT id, account_key, prompt, dialogue_json, created_at
+                   FROM dialogue_proposals WHERE account_key = ?
+                   ORDER BY id DESC LIMIT ?""",
+                (account_key, limit),
+            ).fetchall()
+        return [
+            {
+                "id": row["id"],
+                "account_key": row["account_key"],
+                "prompt": row["prompt"],
+                "dialogue": json.loads(row["dialogue_json"]),
+                "created_at": row["created_at"],
+            }
+            for row in rows
+        ]
+
     def save_campaign_settings(self, config: Dict[str, Any]) -> None:
         now = time.time()
         serialized = json.dumps(config, ensure_ascii=False, sort_keys=True)
@@ -38,6 +115,26 @@ class DatabaseRequests:
                    VALUES (1, ?, ?)
                    ON CONFLICT(id) DO UPDATE SET
                        config_json = excluded.config_json,
+                       updated_at = excluded.updated_at""",
+                (serialized, now),
+            )
+
+    def get_activation_sync_state(self) -> Optional[Dict[str, Any]]:
+        with self.database.connect() as connection:
+            row = connection.execute(
+                "SELECT state_json FROM activation_sync_state WHERE id = 1"
+            ).fetchone()
+        return json.loads(row["state_json"]) if row is not None else None
+
+    def save_activation_sync_state(self, state: Dict[str, Any]) -> None:
+        now = time.time()
+        serialized = json.dumps(state, ensure_ascii=False, sort_keys=True)
+        with self.database.connect() as connection:
+            connection.execute(
+                """INSERT INTO activation_sync_state (id, state_json, updated_at)
+                   VALUES (1, ?, ?)
+                   ON CONFLICT(id) DO UPDATE SET
+                       state_json = excluded.state_json,
                        updated_at = excluded.updated_at""",
                 (serialized, now),
             )

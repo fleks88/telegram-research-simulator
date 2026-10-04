@@ -17,6 +17,7 @@ from .messaging import (
 
 
 MOSCOW_TIMEZONE = ZoneInfo("Europe/Moscow")
+SUPPORTED_PACK_SIZES = {8100, 3650, 1800, 660, 325, 60}
 
 
 class CampaignNotConfigured(ValueError):
@@ -63,7 +64,7 @@ class CampaignService:
                 raise ValueError("schedule slots must be at least 30 minutes apart")
         if not config["phrases"] or any(not phrase.strip() for phrase in config["phrases"]):
             raise ValueError("phrases must contain non-empty strings")
-        allowed_template_fields = {"date", "day", "slot"}
+        allowed_template_fields = {"date", "day", "slot", "pack", "activations"}
         for phrase in config["phrases"]:
             try:
                 fields = {
@@ -75,10 +76,26 @@ class CampaignService:
                 raise ValueError("phrase template has invalid format syntax") from exc
             if not fields <= allowed_template_fields:
                 raise ValueError(
-                    "phrase templates support only {date}, {day}, and {slot}"
+                    "templates support only {date}, {day}, {slot}, {pack}, and {activations}"
                 )
         config.setdefault("auto_reply_enabled", False)
         config.setdefault("reply_prompt", None)
+        config.setdefault("activation_enabled", False)
+        config.setdefault("activation_rules", {})
+        if not isinstance(config["activation_rules"], dict):
+            raise ValueError("activation_rules must be a pack-to-multiplier object")
+        for pack_key, multiplier in config["activation_rules"].items():
+            try:
+                pack_size = int(pack_key)
+                numeric_multiplier = int(multiplier)
+            except (TypeError, ValueError) as exc:
+                raise ValueError("activation_rules must map pack sizes to integer multipliers") from exc
+            if pack_size not in SUPPORTED_PACK_SIZES:
+                raise ValueError(f"unsupported activation pack: {pack_size}")
+            if not 1 <= numeric_multiplier <= 1_000_000:
+                raise ValueError("activation multiplier must be between 1 and 1000000")
+        if config["activation_enabled"] and not config["activation_rules"]:
+            raise ValueError("activation_rules are required when activation sending is enabled")
         if config["auto_reply_enabled"] and not (config["reply_prompt"] or "").strip():
             raise ValueError("reply_prompt is required when automatic replies are enabled")
         if config["reply_prompt"] is not None and len(config["reply_prompt"]) > 4000:
@@ -117,6 +134,8 @@ class CampaignService:
                 date=current.strftime("%Y-%m-%d"),
                 day=campaign_day,
                 slot=campaign_slot,
+                pack="",
+                activations=0,
             )
         except (KeyError, ValueError) as exc:
             raise ValueError("phrase template supports only {date}, {day}, and {slot}") from exc

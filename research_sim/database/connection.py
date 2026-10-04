@@ -56,6 +56,26 @@ CREATE TABLE IF NOT EXISTS received_messages (
     UNIQUE (account_key, telegram_message_id)
 );
 
+CREATE TABLE IF NOT EXISTS sender_personas (
+    account_key TEXT PRIMARY KEY REFERENCES telegram_accounts(account_key) ON DELETE CASCADE,
+    persona_json TEXT NOT NULL,
+    updated_at REAL NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS dialogue_proposals (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    account_key TEXT NOT NULL REFERENCES telegram_accounts(account_key),
+    prompt TEXT NOT NULL,
+    dialogue_json TEXT NOT NULL,
+    created_at REAL NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS activation_sync_state (
+    id INTEGER PRIMARY KEY CHECK (id = 1),
+    state_json TEXT NOT NULL,
+    updated_at REAL NOT NULL
+);
+
 CREATE UNIQUE INDEX IF NOT EXISTS idx_campaign_delivery_slot
 ON message_deliveries(campaign_id, campaign_day, campaign_slot)
 WHERE campaign_id IS NOT NULL;

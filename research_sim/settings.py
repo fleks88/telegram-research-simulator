@@ -31,6 +31,8 @@ class Settings:
     llm_api_key: Optional[str] = None
     llm_base_url: str = "https://api.openai.com/v1"
     llm_model: str = "gpt-4o-mini"
+    pack_activation_endpoint: Optional[str] = None
+    pack_activation_api_token: Optional[str] = None
 
     @classmethod
     def from_environment(cls) -> "Settings":
@@ -84,4 +86,6 @@ class Settings:
             llm_api_key=os.environ.get("LLM_API_KEY") or None,
             llm_base_url=llm_base_url,
             llm_model=llm_model,
+            pack_activation_endpoint=os.environ.get("PACK_ACTIVATION_ENDPOINT") or None,
+            pack_activation_api_token=os.environ.get("PACK_ACTIVATION_API_TOKEN") or None,
         )

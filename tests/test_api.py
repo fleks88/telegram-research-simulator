@@ -73,6 +73,14 @@ class ApiTest(unittest.TestCase):
         response = self.client.get("/api/v1/settings/campaign")
         self.assertEqual(response.status_code, 401)
 
+    def test_activation_status_reports_endpoint_and_empty_snapshots(self) -> None:
+        response = self.client.get("/api/v1/activations/status", headers=self.auth)
+        self.assertEqual(response.status_code, 200)
+        self.assertFalse(response.json()["endpoint_configured"])
+        self.assertFalse(response.json()["enabled"])
+        self.assertIsNone(response.json()["first_response"])
+        self.assertEqual(response.json()["pending"], 0)
+
     def test_sender_settings_allow_only_one_central_recipient(self) -> None:
         from unittest.mock import patch
 
@@ -222,6 +230,76 @@ class ApiTest(unittest.TestCase):
         self.assertFalse(disabled.json()["enabled"])
         listed = self.client.get("/api/v1/accounts", headers=self.auth)
         self.assertEqual(listed.json()[0]["account_key"], "business")
+
+    def test_persona_profile_is_saved_per_account(self) -> None:
+        self.client.post(
+            "/api/v1/accounts",
+            headers=self.auth,
+            json={"account_key": "business", "label": "Business"},
+        )
+        profile = {
+            "identity_prompt": "Calm and concise test persona",
+            "word_accuracy_percent": 93,
+            "punctuation_accuracy_percent": 81,
+        }
+        response = self.client.put(
+            "/api/v1/accounts/business/persona",
+            headers=self.auth,
+            json=profile,
+        )
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(
+            self.client.get(
+                "/api/v1/accounts/business/persona",
+                headers=self.auth,
+            ).json(),
+            profile,
+        )
+        invalid = dict(profile, word_accuracy_percent=101)
+        response = self.client.put(
+            "/api/v1/accounts/business/persona",
+            headers=self.auth,
+            json=invalid,
+        )
+        self.assertEqual(response.status_code, 422)
+
+    def test_dialogue_proposal_uses_fixed_target_replies_and_is_saved(self) -> None:
+        self.client.post(
+            "/api/v1/accounts",
+            headers=self.auth,
+            json={"account_key": "research_a", "label": "Research A"},
+        )
+
+        class FakeDialogueResponder:
+            async def propose_dialogue(self, *, task_prompt, persona, target_replies):
+                return [
+                    {"sender": f"Draft {index}", "target": target}
+                    for index, target in enumerate(target_replies, start=1)
+                ]
+
+        self.app.state.persona_research_service.responder = FakeDialogueResponder()
+        targets = [f"Static target reply {index}" for index in range(1, 6)]
+        response = self.client.post(
+            "/api/v1/research/dialogues/propose",
+            headers=self.auth,
+            json={
+                "account_key": "research_a",
+                "task_prompt": "Closed test scenario",
+                "target_replies": targets,
+            },
+        )
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(len(response.json()["dialogue"]), 5)
+        self.assertEqual(
+            [turn["target"] for turn in response.json()["dialogue"]],
+            targets,
+        )
+        saved = self.client.get(
+            "/api/v1/accounts/research_a/dialogues",
+            headers=self.auth,
+        )
+        self.assertEqual(saved.status_code, 200)
+        self.assertEqual(saved.json()[0]["id"], response.json()["proposal_id"])
 
     def test_campaign_settings_and_scheduled_slot_are_idempotent(self) -> None:
         payload = {
