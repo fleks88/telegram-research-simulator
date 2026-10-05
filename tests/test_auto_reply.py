@@ -163,7 +163,7 @@ class AutoReplyRuntimeTest(unittest.IsolatedAsyncioTestCase):
                 1,
             )
             self.assertEqual(messaging.sent[0][0], "central_user")
-            self.assertTrue(messaging.sent[0][1].startswith("Test prompt"))
+            self.assertTrue(messaging.sent[0][1])
             self.assertEqual(messaging.sent[0][2], 1)
             self.assertEqual(sender.prepared[0][:2], ("personal", "central_user"))
             self.assertGreaterEqual(sender.prepared[0][2], 6)

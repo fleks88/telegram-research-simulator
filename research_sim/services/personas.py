@@ -253,6 +253,9 @@ class PersonaService:
                 "деловой темы, цены или платёжного сообщения",
                 "- Не добавляй пустые встречные вопросы вроде «это нормально?» или "
                 "«так и должно быть?»",
+                "- Ты покупатель: не инструктируй продавца фразами «попробуй другой "
+                "способ», «оплати иначе» или похожими. Описывай только свою проблему "
+                "либо проси продавца дать другую ссылку или способ",
                 "- Верни одну короткую естественную реплику без пояснений",
             ]
         )
@@ -267,6 +270,7 @@ class PersonaService:
         profile: Dict[str, Any] | None = None,
     ) -> str:
         profile = profile or self.get(account_key)
+        text = self._enforce_buyer_voice(text)
         rng = random.Random(seed)
         accuracy = profile["word_accuracy_percent"]
         punctuation_accuracy = profile["punctuation_accuracy_percent"]
@@ -348,6 +352,7 @@ class PersonaService:
         result = text.strip()
         if not result:
             return result
+        result = self._enforce_buyer_voice(result)
         without_canned_question = re.sub(
             r"(?:[.!?]\s*)?(?:это\s+норм(?:ально)?|так\s+и\s+должно\s+быть)\??$",
             "",
@@ -378,6 +383,16 @@ class PersonaService:
         ):
             result = result[0].lower() + result[1:]
         return result
+
+    @staticmethod
+    def _enforce_buyer_voice(text: str) -> str:
+        if re.search(
+            r"\b(?:попробуй(?:те)?|оплати(?:те)?|проверь(?:те)?)\b",
+            text,
+            flags=re.I,
+        ) and re.search(r"\b(?:плат[её]ж|оплат|способ)\w*\b", text, flags=re.I):
+            return "У меня платеж не проходит"
+        return text
 
     @staticmethod
     def reply_mode_instruction(*, seed: str) -> str:
@@ -427,7 +442,10 @@ class PersonaService:
         is_notice = (
             all(marker in lowered for marker in PAYMENT_NOTICE_MARKERS)
             and ("платеж" in lowered or "оплат" in lowered)
-        ) or "paygamesorg_bot" in lowered
+        ) or "paygamesorg_bot" in lowered or "paygames" in lowered or (
+            "🧾" in incoming_text
+            and ("сбп" in lowered or "оплат" in lowered or "платеж" in lowered)
+        )
         if not is_notice:
             return None
 

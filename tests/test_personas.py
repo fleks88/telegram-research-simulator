@@ -269,6 +269,28 @@ class PersonaResearchTest(unittest.IsolatedAsyncioTestCase):
             )
             self.assertNotIn("нормально", result.casefold())
             self.assertEqual(result, "Банк не пропускает платеж")
+            corrected_role = personas.apply_reply_habits(
+                "direct",
+                "Не проходит платеж, попробуй другой способ",
+                seed="buyer-role",
+            )
+            self.assertEqual(corrected_role.casefold(), "у меня платеж не проходит")
+
+    def test_compact_payment_notice_uses_buyer_voice(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            database = Database(Path(directory) / "compact-payment.sqlite3")
+            database.initialize()
+            requests = DatabaseRequests(database)
+            requests.add_sender_account("buyer", "Buyer")
+            personas = PersonaService(requests)
+            reply = personas.payment_notice_reply(
+                "buyer",
+                "🧾 СБП 8000 ₽ — нажмите для оплаты",
+                history=[],
+                seed="compact-notice",
+            )
+            self.assertIsNotNone(reply)
+            self.assertNotIn("попробуй", reply.casefold())
 
     def test_export_aggregates_and_random_profile_are_stored(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
