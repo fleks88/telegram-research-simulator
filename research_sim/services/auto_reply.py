@@ -208,6 +208,9 @@ class AutoReplyRuntime:
                 seed=f"payment:{account_key}:{message.id}",
             )
             prompt = self._compose_prompt(account_key, config["reply_prompt"])
+            prompt += "\n\n" + self.personas.reply_mode_instruction(
+                seed=f"reply-mode:{account_key}:{message.id}"
+            )
             analyzer = getattr(self.responder, "create_reply_analysis", None)
             if payment_reply is not None:
                 reply = payment_reply
@@ -306,6 +309,10 @@ class AutoReplyRuntime:
                     reply = await self.responder.create_reply(
                         self._compose_prompt(
                             row["account_key"], config["reply_prompt"]
+                        )
+                        + "\n\n"
+                        + self.personas.reply_mode_instruction(
+                            seed=f"due-mode:{row['account_key']}:{row['id']}"
                         ),
                         row["message_text"],
                         history=self.requests.get_conversation_context(

@@ -239,6 +239,36 @@ class PersonaResearchTest(unittest.IsolatedAsyncioTestCase):
                     seed="not-payment",
                 )
             )
+            generated = [
+                personas.payment_notice_reply(
+                    "buyer",
+                    notice,
+                    history=[],
+                    seed=f"distribution:{index}",
+                )
+                for index in range(1000)
+            ]
+            question_count = sum(reply.endswith("?") for reply in generated)
+            self.assertGreaterEqual(question_count, 250)
+            self.assertLessEqual(question_count, 350)
+            self.assertTrue(
+                all("это норм" not in reply.casefold() for reply in generated)
+            )
+
+    def test_canned_followup_question_is_removed(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            database = Database(Path(directory) / "followup.sqlite3")
+            database.initialize()
+            requests = DatabaseRequests(database)
+            requests.add_sender_account("direct", "Direct")
+            personas = PersonaService(requests)
+            result = personas.apply_reply_habits(
+                "direct",
+                "Банк не пропускает платеж. Это нормально?",
+                seed="remove-canned-question",
+            )
+            self.assertNotIn("нормально", result.casefold())
+            self.assertEqual(result, "Банк не пропускает платеж")
 
     def test_export_aggregates_and_random_profile_are_stored(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

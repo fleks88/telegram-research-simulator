@@ -91,6 +91,10 @@ class PersonaResearchService:
             reply_prompt.strip()
             + "\n\n"
             + self.personas.prompt_fragment(account_key)
+            + "\n\n"
+            + self.personas.reply_mode_instruction(
+                seed=f"preview-mode:{account_key}:{message}"
+            )
         )
         reply = await self.responder.create_reply(
             effective_prompt,
