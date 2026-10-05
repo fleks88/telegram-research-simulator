@@ -270,7 +270,7 @@ class PersonaService:
         profile: Dict[str, Any] | None = None,
     ) -> str:
         profile = profile or self.get(account_key)
-        text = self._enforce_buyer_voice(text)
+        text = self.enforce_buyer_voice(text, seed=seed)
         rng = random.Random(seed)
         accuracy = profile["word_accuracy_percent"]
         punctuation_accuracy = profile["punctuation_accuracy_percent"]
@@ -352,7 +352,7 @@ class PersonaService:
         result = text.strip()
         if not result:
             return result
-        result = self._enforce_buyer_voice(result)
+        result = self.enforce_buyer_voice(result, seed=seed)
         without_canned_question = re.sub(
             r"(?:[.!?]\s*)?(?:это\s+норм(?:ально)?|так\s+и\s+должно\s+быть)\??$",
             "",
@@ -384,15 +384,52 @@ class PersonaService:
             result = result[0].lower() + result[1:]
         return result
 
-    @staticmethod
-    def _enforce_buyer_voice(text: str) -> str:
-        if re.search(
+    def enforce_buyer_voice(
+        self,
+        text: str,
+        *,
+        seed: str,
+        history: list[Dict[str, Any]] | None = None,
+    ) -> str:
+        needs_correction = re.search(
             r"\b(?:попробуй(?:те)?|оплати(?:те)?|проверь(?:те)?)\b",
             text,
             flags=re.I,
-        ) and re.search(r"\b(?:плат[её]ж|оплат|способ)\w*\b", text, flags=re.I):
-            return "У меня платеж не проходит"
-        return text
+        ) and re.search(
+            r"\b(?:плат[её]ж|оплат|способ)\w*\b",
+            text,
+            flags=re.I,
+        )
+        if not needs_correction:
+            return text
+        candidates = [
+            "У меня платеж не проходит",
+            "Банк у меня оплату не пропускает",
+            "У меня банк платеж отклоняет",
+            "Не могу оплатить",
+            "СБП у меня не проходит",
+            "Оплата у меня блокируется",
+            "У меня с оплатой не выходит",
+            "Банк не дает мне оплатить",
+        ]
+
+        def normalize(value: str) -> str:
+            return re.sub(r"[^a-zа-яё0-9]+", " ", value.casefold()).strip()
+
+        recent = [
+            normalize(row["message_text"])
+            for row in history or []
+            if row.get("direction") == "outgoing" and row.get("message_text")
+        ][-8:]
+        fresh = [
+            candidate
+            for candidate in candidates
+            if all(
+                SequenceMatcher(None, normalize(candidate), previous).ratio() < 0.68
+                for previous in recent
+            )
+        ]
+        return random.Random(seed + ":buyer-voice").choice(fresh or candidates)
 
     @staticmethod
     def reply_mode_instruction(*, seed: str) -> str:

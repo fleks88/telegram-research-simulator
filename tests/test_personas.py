@@ -274,7 +274,18 @@ class PersonaResearchTest(unittest.IsolatedAsyncioTestCase):
                 "Не проходит платеж, попробуй другой способ",
                 seed="buyer-role",
             )
-            self.assertEqual(corrected_role.casefold(), "у меня платеж не проходит")
+            self.assertNotIn("попробуй", corrected_role.casefold())
+            variants = {
+                personas.enforce_buyer_voice(
+                    "Не проходит платеж, попробуй другой способ",
+                    seed=f"variant:{index}",
+                )
+                for index in range(100)
+            }
+            self.assertGreaterEqual(len(variants), 6)
+            self.assertTrue(
+                all("попробуй" not in variant.casefold() for variant in variants)
+            )
 
     def test_compact_payment_notice_uses_buyer_voice(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
