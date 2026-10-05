@@ -90,6 +90,9 @@ def add_sender_account(
             payload.account_key,
             payload.label,
         )
+        request.app.state.persona_research_service.randomize_profile(
+            account.account_key
+        )
     except AccountAlreadyExists as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     except ValueError as exc:
@@ -178,6 +181,23 @@ def put_account_persona(
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return PersonaProfilePayload(**profile)
+
+
+@protected_router.post(
+    "/accounts/{account_key}/persona/randomize",
+    response_model=PersonaProfilePayload,
+)
+def randomize_account_persona(
+    account_key: str,
+    request: Request,
+) -> PersonaProfilePayload:
+    try:
+        profile = request.app.state.persona_research_service.randomize_profile(
+            account_key
+        )
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
     return PersonaProfilePayload(**profile)
 
 

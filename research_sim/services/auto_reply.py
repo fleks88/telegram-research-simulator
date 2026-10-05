@@ -35,7 +35,10 @@ class AutoReplyRuntime:
         self.sender = sender
         self.messaging = messaging
         self.responder = responder
-        self.personas = PersonaService(requests)
+        self.personas = PersonaService(
+            requests,
+            corpus_path=settings.persona_corpus_path,
+        )
         self._task: asyncio.Task[None] | None = None
         self._central_sender_ids: Dict[str, int] = {}
         self._handlers: Dict[str, Any] = {}
@@ -180,6 +183,11 @@ class AutoReplyRuntime:
                 prompt,
                 message_text,
                 history=history,
+            )
+            reply = self.personas.apply_reply_habits(
+                account_key,
+                reply,
+                seed=f"auto:{account_key}:{message.id}",
             )
         except Exception:
             self.requests.set_received_message_status(

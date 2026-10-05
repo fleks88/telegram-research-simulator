@@ -4,4 +4,6 @@ __pycache__/
 *.py[cod]
 *.session
 *.session-journal
+result.json
+Telegram_Export_*/
 data/

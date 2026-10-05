@@ -59,6 +59,9 @@ class PersonaProfilePayload(BaseModel):
     humor_level: int = Field(default=2, ge=1, le=5)
     emoji_level: int = Field(default=1, ge=1, le=5)
     initiative_level: int = Field(default=3, ge=1, le=5)
+    address_style: str = Field(default="ты", pattern="^(ты|вы)$")
+    terminal_period_percent: int = Field(default=1, ge=0, le=100)
+    lowercase_start_percent: int = Field(default=5, ge=0, le=100)
 
 
 class DialogueProposalRequest(BaseModel):

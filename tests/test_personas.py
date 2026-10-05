@@ -2,12 +2,14 @@ from __future__ import annotations
 
 import tempfile
 import unittest
+import json
 from pathlib import Path
 from typing import Any, Dict, List
 
 from research_sim.database import Database, DatabaseRequests
 from research_sim.services.persona_research import PersonaResearchService
 from research_sim.services.personas import PersonaService
+from research_sim.services.persona_corpus import analyze_telegram_export
 
 
 class FakeDialogueResponder:
@@ -73,10 +75,10 @@ class PersonaResearchTest(unittest.IsolatedAsyncioTestCase):
             personas = PersonaService(requests)
 
             source = "Testing the dialogue, carefully."
-            self.assertEqual(
-                personas.stylize_scheduled_text("plain", source, seed="fixed"),
-                source,
+            default_result = personas.stylize_scheduled_text(
+                "plain", source, seed="fixed"
             )
+            self.assertEqual(default_result, "Testing the dialogue, carefully")
             personas.save(
                 "plain",
                 {
@@ -89,6 +91,44 @@ class PersonaResearchTest(unittest.IsolatedAsyncioTestCase):
             second = personas.stylize_scheduled_text("plain", source, seed="fixed")
             self.assertEqual(first, second)
             self.assertNotEqual(first, source)
+
+    def test_export_aggregates_and_random_profile_are_stored(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            export_path = root / "result.json"
+            export_path.write_text(
+                json.dumps(
+                    {
+                        "chats": {
+                            "list": [
+                                {
+                                    "messages": [
+                                        {"type": "message", "text": "привет ты"},
+                                        {"type": "message", "text": "Как ваши дела."},
+                                        {"type": "message", "text": ["норм", {"text": " 🙂"}]},
+                                    ]
+                                }
+                            ]
+                        }
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+            style = analyze_telegram_export(export_path)
+            self.assertEqual(style.message_count, 3)
+            self.assertEqual(style.terminal_period_percent, 33)
+            self.assertEqual(style.emoji_percent, 33)
+            self.assertEqual(style.informal_address_percent, 50)
+
+            database = Database(root / "persona.sqlite3")
+            database.initialize()
+            requests = DatabaseRequests(database)
+            requests.add_sender_account("random", "Random")
+            profile = PersonaService(requests, export_path).randomize("random")
+            self.assertIn(profile["address_style"], {"ты", "вы"})
+            self.assertLessEqual(profile["terminal_period_percent"], 6)
+            self.assertEqual(PersonaService(requests).get("random"), profile)
 
 
 if __name__ == "__main__":

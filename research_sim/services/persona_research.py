@@ -26,6 +26,14 @@ class PersonaResearchService:
     def save_profile(self, account_key: str, profile: Dict[str, Any]) -> Dict[str, Any]:
         return self.personas.save(account_key, profile)
 
+    def randomize_profile(self, account_key: str) -> Dict[str, Any]:
+        if not any(
+            account.account_key == account_key
+            for account in self.requests.list_sender_accounts()
+        ):
+            raise KeyError("sender account not found")
+        return self.personas.randomize(account_key)
+
     async def propose_dialogue(
         self,
         *,
@@ -88,6 +96,11 @@ class PersonaResearchService:
             effective_prompt,
             message,
             history=self.requests.get_conversation_context(account_key, limit=12),
+        )
+        reply = self.personas.apply_reply_habits(
+            account_key,
+            reply,
+            seed=f"preview:{account_key}:{message}",
         )
         return {
             "account_key": account_key,

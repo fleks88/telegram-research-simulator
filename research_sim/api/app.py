@@ -29,7 +29,10 @@ def create_app(
     app_database = database or Database(app_settings.database_path)
     database_requests = DatabaseRequests(app_database)
     telegram_sender = TelethonSender(app_settings, client_factory=client_factory)
-    persona_service = PersonaService(database_requests)
+    persona_service = PersonaService(
+        database_requests,
+        corpus_path=app_settings.persona_corpus_path,
+    )
     prompt_responder = PromptResponder(app_settings)
     messaging_service = MessagingService(
         app_settings,

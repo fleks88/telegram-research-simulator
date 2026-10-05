@@ -221,6 +221,12 @@ class ApiTest(unittest.TestCase):
         )
         self.assertEqual(added.status_code, 201)
         self.assertNotIn("session_path", added.json())
+        generated = self.client.get(
+            "/api/v1/accounts/business/persona",
+            headers=self.auth,
+        ).json()
+        self.assertTrue(generated["identity_prompt"])
+        self.assertIn(generated["address_style"], {"ты", "вы"})
 
         disabled = self.client.patch(
             "/api/v1/accounts/business",
@@ -264,6 +270,14 @@ class ApiTest(unittest.TestCase):
             json=invalid,
         )
         self.assertEqual(response.status_code, 422)
+
+        randomized = self.client.post(
+            "/api/v1/accounts/business/persona/randomize",
+            headers=self.auth,
+        )
+        self.assertEqual(randomized.status_code, 200, randomized.text)
+        self.assertIn(randomized.json()["address_style"], {"ты", "вы"})
+        self.assertLessEqual(randomized.json()["terminal_period_percent"], 6)
 
     def test_dialogue_proposal_uses_fixed_target_replies_and_is_saved(self) -> None:
         self.client.post(

@@ -835,16 +835,28 @@ async def _register_new_account(
     except Exception as exc:
         await update.effective_message.reply_text(f"Не удалось добавить аккаунт: {exc}")
         return ConversationHandler.END
+    try:
+        profile = await _api(context).account_persona(account["account_key"])
+    except Exception as exc:
+        await update.effective_message.reply_text(
+            f"Аккаунт добавлен, но личность не создалась: {exc}",
+            reply_markup=home_keyboard(),
+        )
+        return ConversationHandler.END
+    context.user_data.clear()
     await update.effective_message.reply_text(
         f"Добавлен аккаунт #{account['account_index']}: {account['label']} "
-        f"({account['account_key']}).\n\nОцените грамотность: 1 — много ошибок, "
-        "5 — пишет грамотно.",
-        reply_markup=trait_keyboard(),
+        f"({account['account_key']}).\n\n"
+        "Личность создана автоматически и сохранена:\n"
+        f"• обращение: на «{profile['address_style']}»\n"
+        f"• грамотность: {profile['literacy_level']}/5\n"
+        f"• резкость: {profile['aggression_level']}/5\n"
+        f"• разговорчивость: {profile['verbosity_level']}/5\n"
+        f"• точка в конце: {profile['terminal_period_percent']}%\n\n"
+        "Изменить профиль можно в разделе «Личности».",
+        reply_markup=home_keyboard(),
     )
-    context.user_data["profile_account_key"] = account["account_key"]
-    context.user_data["profile_traits"] = {}
-    context.user_data["trait_position"] = 0
-    return ACCOUNT_TRAIT_LITERACY
+    return ConversationHandler.END
 
 
 async def account_trait_chosen(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -902,6 +914,7 @@ async def account_identity_entered(
     literacy = int(traits.get("literacy_level", 5))
     accuracy_by_level = {1: 68, 2: 78, 3: 88, 4: 95, 5: 100}
     profile = {
+        **context.user_data.get("profile_existing", {}),
         **traits,
         "identity_prompt": identity,
         "word_accuracy_percent": accuracy_by_level[literacy],

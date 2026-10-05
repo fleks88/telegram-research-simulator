@@ -63,6 +63,12 @@ class ApiClient:
             json=profile,
         )
 
+    async def randomize_account_persona(self, account_key: str) -> Dict[str, Any]:
+        return await self.request(
+            "POST",
+            "/api/v1/accounts/" + account_key + "/persona/randomize",
+        )
+
     async def propose_dialogue(
         self,
         *,

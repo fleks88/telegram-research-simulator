@@ -33,6 +33,7 @@ class Settings:
     llm_model: str = "gpt-4o-mini"
     pack_activation_endpoint: Optional[str] = None
     pack_activation_api_token: Optional[str] = None
+    persona_corpus_path: Path = Path("result.json")
 
     @classmethod
     def from_environment(cls) -> "Settings":
@@ -88,4 +89,7 @@ class Settings:
             llm_model=llm_model,
             pack_activation_endpoint=os.environ.get("PACK_ACTIVATION_ENDPOINT") or None,
             pack_activation_api_token=os.environ.get("PACK_ACTIVATION_API_TOKEN") or None,
+            persona_corpus_path=Path(
+                os.environ.get("PERSONA_CORPUS_PATH", "result.json")
+            ).expanduser(),
         )
