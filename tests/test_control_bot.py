@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import unittest
+import tempfile
 from datetime import datetime, timezone
+from pathlib import Path
 
 from research_sim.bot.app import (
     format_moscow_time,
@@ -10,6 +12,8 @@ from research_sim.bot.app import (
     parse_activation_rules,
     parse_admin_ids,
     parse_day_slots,
+    save_session_bundle,
+    validate_session_upload,
 )
 
 
@@ -53,6 +57,38 @@ class ControlBotHelpersTest(unittest.TestCase):
             parse_activation_rules("8100x10,8100x4")
         with self.assertRaisesRegex(ValueError, "Неизвестный пакет"):
             parse_activation_rules("999x10")
+
+    def test_session_bundle_upload_is_validated_and_saved_privately(self) -> None:
+        session = b"SQLite format 3\x00" + b"test"
+        metadata = b'{"api_id": 123, "api_hash": "hash"}'
+        self.assertEqual(
+            validate_session_upload("Research_A.session", session),
+            ("research_a", ".session"),
+        )
+        self.assertEqual(
+            validate_session_upload("Research_A.json", metadata),
+            ("research_a", ".json"),
+        )
+        self.assertEqual(
+            validate_session_upload("+79990001122.session", session),
+            ("79990001122", ".session"),
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            target = Path(directory) / "sessions"
+            save_session_bundle(
+                target,
+                "research_a",
+                {".session": session, ".json": metadata},
+            )
+            self.assertEqual((target / "research_a.session").read_bytes(), session)
+            self.assertEqual((target / "research_a.json").read_bytes(), metadata)
+            self.assertEqual((target / "research_a.session").stat().st_mode & 0o777, 0o600)
+            with self.assertRaises(FileExistsError):
+                save_session_bundle(
+                    target,
+                    "research_a",
+                    {".session": session, ".json": metadata},
+                )
 
 
 if __name__ == "__main__":

@@ -48,6 +48,28 @@ class FakeResponder:
 
 
 class AutoReplyRuntimeTest(unittest.IsolatedAsyncioTestCase):
+    async def test_session_json_can_supply_per_account_api_credentials(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            session_dir = Path(directory) / "sessions"
+            session_dir.mkdir()
+            (session_dir / "personal.json").write_text(
+                '{"app_id": 456, "app_hash": "personal-hash"}',
+                encoding="utf-8",
+            )
+            settings = Settings(
+                database_path=Path(directory) / "test.sqlite3",
+                api_token="token",
+                telegram_api_id=None,
+                telegram_api_hash=None,
+                telegram_session_dir=session_dir,
+                allowed_recipients={"central_user"},
+            )
+            sender = TelethonSender(settings)
+            self.assertEqual(
+                sender._credentials_for("personal"),
+                (456, "personal-hash"),
+            )
+
     async def test_only_central_sender_is_answered_once(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             database = Database(Path(directory) / "test.sqlite3")

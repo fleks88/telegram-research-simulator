@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import json
 import logging
 import os
 import re
@@ -43,6 +45,7 @@ DIALOGUE_ACCOUNT, DIALOGUE_TASK, DIALOGUE_TARGETS = range(12, 15)
     EDIT_REPLY_DELAY,
     EDIT_ACTIVATION_RULES,
 ) = range(15, 26)
+ACCOUNT_UPLOAD = 26
 ACCOUNT_KEY_PATTERN = re.compile(r"^[a-zA-Z0-9_-]{1,48}$")
 PACK_SIZES = {8100, 3650, 1800, 660, 325, 60}
 DEFAULT_REPLY_PROMPT = (
@@ -99,6 +102,61 @@ def trait_keyboard() -> InlineKeyboardMarkup:
             [InlineKeyboardButton("Отмена", callback_data="flow:cancel")],
         ]
     )
+
+
+def validate_session_upload(filename: str, content: bytes) -> tuple[str, str]:
+    path = Path(filename)
+    suffix = path.suffix.casefold()
+    if suffix not in {".session", ".json"}:
+        raise ValueError("нужен файл .session или .json")
+    raw_stem = path.stem.strip().casefold()
+    account_key = re.sub(r"[^a-z0-9_-]+", "_", raw_stem).strip("_-")
+    if not account_key:
+        digest = hashlib.sha256(raw_stem.encode("utf-8")).hexdigest()[:12]
+        account_key = "account_" + digest
+    elif len(account_key) > 48:
+        digest = hashlib.sha256(raw_stem.encode("utf-8")).hexdigest()[:12]
+        account_key = account_key[:35].rstrip("_-") + "_" + digest
+    if suffix == ".session":
+        if not content.startswith(b"SQLite format 3\x00"):
+            raise ValueError(".session не похож на SQLite-сессию Telethon")
+    else:
+        try:
+            metadata = json.loads(content.decode("utf-8-sig"))
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise ValueError(".json должен содержать корректный JSON") from exc
+        if not isinstance(metadata, dict):
+            raise ValueError("верхний уровень .json должен быть объектом")
+    return account_key, suffix
+
+
+def save_session_bundle(
+    session_dir: Path,
+    account_key: str,
+    files: Dict[str, bytes],
+) -> None:
+    session_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+    targets = {
+        suffix: session_dir / f"{account_key}{suffix}"
+        for suffix in (".session", ".json")
+    }
+    existing = [path for path in targets.values() if path.exists()]
+    if existing:
+        raise FileExistsError(f"файл уже существует: {existing[0].name}")
+    temporary: list[Path] = []
+    try:
+        for suffix, target in targets.items():
+            temp_path = target.with_name(target.name + f".upload-{os.getpid()}")
+            with temp_path.open("xb") as stream:
+                stream.write(files[suffix])
+            os.chmod(temp_path, 0o600)
+            temporary.append(temp_path)
+        for suffix, target in targets.items():
+            os.replace(target.with_name(target.name + f".upload-{os.getpid()}"), target)
+    finally:
+        for path in temporary:
+            if path.exists():
+                path.unlink()
 
 
 def parse_admin_ids(value: str) -> Set[int]:
@@ -576,6 +634,7 @@ async def add_account_start(
             for key in available[:30]
         ]
         buttons.extend([
+            [InlineKeyboardButton("⬆️ Загрузить .session + .json", callback_data="session:upload")],
             [InlineKeyboardButton("Ввести ключ вручную", callback_data="session:manual")],
             [InlineKeyboardButton("Отмена", callback_data="flow:cancel")],
         ])
@@ -588,6 +647,7 @@ async def add_account_start(
             "Новых .session файлов не найдено. Положите готовый авторизованный "
             f"Telethon-файл в {session_dir} или введите его ключ вручную.",
             reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("⬆️ Загрузить .session + .json", callback_data="session:upload")],
                 [InlineKeyboardButton("Ввести ключ вручную", callback_data="session:manual")],
                 [InlineKeyboardButton("Отмена", callback_data="flow:cancel")],
             ]),
@@ -603,6 +663,17 @@ async def add_account_key(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         query = update.callback_query
         await query.answer()
         selected = query.data.split(":", 1)[1]
+        if selected == "upload":
+            context.user_data["session_upload"] = {}
+            context.user_data.pop("session_upload_key", None)
+            await query.edit_message_text(
+                "Отправьте два документа с одинаковым именем: account.session и "
+                "account.json. Порядок не важен. Максимум: session 20 МБ, JSON 1 МБ.",
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("Отмена", callback_data="flow:cancel")]
+                ]),
+            )
+            return ACCOUNT_UPLOAD
         if selected == "manual":
             await query.edit_message_text(
                 "Введите ключ готового файла без суффикса .session, например business:",
@@ -628,6 +699,66 @@ async def add_account_key(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     context.user_data["new_account_key"] = account_key
     await update.effective_message.reply_text(
         "Введите подпись аккаунта для списка:",
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("Отмена", callback_data="flow:cancel")]
+        ]),
+    )
+    return ADD_ACCOUNT_LABEL
+
+
+async def account_upload_received(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+) -> int:
+    if not _is_authorized(update, context):
+        await _deny(update)
+        return ConversationHandler.END
+    document = update.effective_message.document
+    filename = Path(document.file_name or "").name
+    suffix = Path(filename).suffix.casefold()
+    size_limit = 20 * 1024 * 1024 if suffix == ".session" else 1024 * 1024
+    if document.file_size is not None and document.file_size > size_limit:
+        await update.effective_message.reply_text(
+            ".session должен быть не больше 20 МБ, .json — не больше 1 МБ."
+        )
+        return ACCOUNT_UPLOAD
+    telegram_file = await document.get_file()
+    content = bytes(await telegram_file.download_as_bytearray())
+    if len(content) > size_limit:
+        await update.effective_message.reply_text("Файл слишком большой.")
+        return ACCOUNT_UPLOAD
+    try:
+        account_key, suffix = validate_session_upload(filename, content)
+    except ValueError as exc:
+        await update.effective_message.reply_text(f"Файл не принят: {exc}")
+        return ACCOUNT_UPLOAD
+    expected_key = context.user_data.get("session_upload_key")
+    if expected_key is not None and account_key != expected_key:
+        await update.effective_message.reply_text(
+            f"Имена должны совпадать. Ожидаются файлы для {expected_key}."
+        )
+        return ACCOUNT_UPLOAD
+    context.user_data["session_upload_key"] = account_key
+    uploaded = context.user_data.setdefault("session_upload", {})
+    uploaded[suffix] = content
+    missing = [item for item in (".session", ".json") if item not in uploaded]
+    if missing:
+        await update.effective_message.reply_text(
+            f"Принят {filename}. Теперь отправьте {account_key}{missing[0]}."
+        )
+        return ACCOUNT_UPLOAD
+    session_dir = Path(context.application.bot_data["session_dir"])
+    try:
+        save_session_bundle(session_dir, account_key, uploaded)
+    except OSError as exc:
+        await update.effective_message.reply_text(f"Не удалось сохранить файлы: {exc}")
+        return ConversationHandler.END
+    context.user_data.pop("session_upload", None)
+    context.user_data.pop("session_upload_key", None)
+    context.user_data["new_account_key"] = account_key
+    await update.effective_message.reply_text(
+        f"Файлы {account_key}.session и {account_key}.json сохранены. "
+        "Введите подпись аккаунта:",
         reply_markup=InlineKeyboardMarkup([
             [InlineKeyboardButton("Отмена", callback_data="flow:cancel")]
         ]),
@@ -1605,6 +1736,9 @@ def build_application() -> Application:
                 CallbackQueryHandler(add_account_key, pattern=r"^session:[a-zA-Z0-9_-]+$"),
             ],
             ADD_ACCOUNT_LABEL: [MessageHandler(filters.TEXT & ~filters.COMMAND, add_account_label)],
+            ACCOUNT_UPLOAD: [
+                MessageHandler(filters.Document.ALL, account_upload_received)
+            ],
             SEND_ACCOUNT: [CallbackQueryHandler(send_account_chosen, pattern=r"^sendacct:\d+$")],
             SEND_TEXT: [MessageHandler(filters.TEXT & ~filters.COMMAND, send_text_entered)],
             SEND_ATTACHMENT: [
