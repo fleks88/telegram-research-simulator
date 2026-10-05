@@ -51,6 +51,10 @@ class PersonaResearchTest(unittest.IsolatedAsyncioTestCase):
             self.assertIn("UC («юц») — внутриигровая валюта PUBG", prompt)
             self.assertIn("@paygamesorg_bot", prompt)
             self.assertIn("коротко переспроси", prompt)
+            self.assertGreater(
+                prompt.rfind("Обязательный контракт стиля"),
+                prompt.rfind("Дополнительное описание"),
+            )
             responder = FakeDialogueResponder()
             service = PersonaResearchService(requests, personas, responder)
             targets = [f"Static test reply {index}" for index in range(1, 6)]
@@ -139,6 +143,36 @@ class PersonaResearchTest(unittest.IsolatedAsyncioTestCase):
             )
             self.assertGreaterEqual(lowercase, 70)
             self.assertLessEqual(lowercase, 130)
+
+    def test_low_literacy_style_survives_a_polished_base_reply(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            database = Database(Path(directory) / "low-style.sqlite3")
+            database.initialize()
+            requests = DatabaseRequests(database)
+            requests.add_sender_account("low", "Low")
+            personas = PersonaService(requests)
+            profile = personas.save(
+                "low",
+                {
+                    "literacy_level": 2,
+                    "word_accuracy_percent": 100,
+                    "punctuation_accuracy_percent": 60,
+                    "terminal_period_percent": 0,
+                    "lowercase_start_percent": 10,
+                },
+            )
+            source = "Банк не пропускает платеж, не дает оплатить. Это нормально?"
+            results = [
+                personas.stylize_scheduled_text(
+                    "low",
+                    source,
+                    seed=f"payment:{index}",
+                    profile=profile,
+                )
+                for index in range(100)
+            ]
+            self.assertGreaterEqual(sum(result != source for result in results), 70)
+            self.assertGreaterEqual(sum("," not in result for result in results), 30)
 
     def test_export_aggregates_and_random_profile_are_stored(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

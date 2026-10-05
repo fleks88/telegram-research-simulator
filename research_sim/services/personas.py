@@ -203,7 +203,11 @@ class PersonaService:
             "emoji_level": "Использование эмодзи",
             "initiative_level": "Инициативность",
         }
-        lines = ["Профиль текущего отправителя:"]
+        lines = [PUBG_DOMAIN_CONTEXT]
+        learned = self.knowledge.learned_prompt()
+        if learned:
+            lines.extend(["", learned])
+        lines.extend(["", "Профиль текущего отправителя:"])
         effective_literacy = max(1, int(profile["literacy_level"]) - 1)
         lines.append(f"- Грамотность: {effective_literacy} из 5")
         lines.extend(f"- {label}: {profile[key]} из 5" for key, label in labels.items())
@@ -222,10 +226,20 @@ class PersonaService:
         if profile["identity_prompt"]:
             lines.append("- Дополнительное описание: " + profile["identity_prompt"])
         lines.append("Резкость не разрешает угрозы, травлю или оскорбления.")
-        lines.extend(["", PUBG_DOMAIN_CONTEXT])
-        learned = self.knowledge.learned_prompt()
-        if learned:
-            lines.extend(["", learned])
+        lines.extend(
+            [
+                "",
+                "Обязательный контракт стиля (имеет приоритет над стилем "
+                "общего сценария и словаря):",
+                "- Общий prompt, предметный контекст и словарь определяют смысл, "
+                "но не манеру письма",
+                "- Манеру, длину, грамотность, обращение и пунктуацию всегда бери "
+                "из профиля текущего отправителя",
+                "- Не исправляй речь до литературной и не повышай грамотность из-за "
+                "деловой темы, цены или платёжного сообщения",
+                "- Верни одну короткую естественную реплику без пояснений",
+            ]
+        )
         return "\n".join(lines)
 
     def stylize_scheduled_text(
@@ -240,23 +254,22 @@ class PersonaService:
         rng = random.Random(seed)
         accuracy = profile["word_accuracy_percent"]
         punctuation_accuracy = profile["punctuation_accuracy_percent"]
+        effective_literacy = max(1, int(profile["literacy_level"]) - 1)
+        changed_words = 0
 
-        def vary_word(match: re.Match[str]) -> str:
-            word = match.group(0)
-            if rng.randrange(100) < accuracy:
-                return word
+        def make_typo(word: str) -> str:
             index = rng.randrange(1, len(word) - 1)
             letters = list(word)
-            literacy = int(profile["literacy_level"])
             error_kind = rng.choice(
                 ["transpose", "delete", "replace"]
-                if literacy <= 2
+                if effective_literacy <= 2
                 else ["transpose", "transpose", "replace"]
             )
             if error_kind == "delete" and len(letters) > 4:
                 del letters[index]
             elif error_kind == "replace" and letters[index].casefold() in CYRILLIC_LETTERS:
-                replacement = rng.choice(CYRILLIC_LETTERS)
+                choices = CYRILLIC_LETTERS.replace(letters[index].casefold(), "")
+                replacement = rng.choice(choices)
                 letters[index] = (
                     replacement.upper() if letters[index].isupper() else replacement
                 )
@@ -264,7 +277,26 @@ class PersonaService:
                 letters[index], letters[index + 1] = letters[index + 1], letters[index]
             return "".join(letters)
 
+        def vary_word(match: re.Match[str]) -> str:
+            nonlocal changed_words
+            word = match.group(0)
+            if rng.randrange(100) < accuracy:
+                return word
+            changed = make_typo(word)
+            changed_words += int(changed != word)
+            return changed
+
         varied = WORD_PATTERN.sub(vary_word, text)
+        ensure_error_percent = {1: 78, 2: 52, 3: 18}.get(effective_literacy, 0)
+        if changed_words == 0 and rng.randrange(100) < ensure_error_percent:
+            candidates = list(WORD_PATTERN.finditer(varied))
+            if candidates:
+                chosen = rng.choice(candidates)
+                varied = (
+                    varied[: chosen.start()]
+                    + make_typo(chosen.group(0))
+                    + varied[chosen.end() :]
+                )
 
         def vary_punctuation(match: re.Match[str]) -> str:
             mark = match.group(0)
@@ -275,6 +307,11 @@ class PersonaService:
             return rng.choice([",", ";", "", "."])
 
         varied = PUNCTUATION_PATTERN.sub(vary_punctuation, varied)
+        punctuation_error_percent = 100 - int(punctuation_accuracy)
+        if effective_literacy <= 2 and rng.randrange(100) < punctuation_error_percent:
+            varied = re.sub(r"[,;:]", "", varied)
+            if rng.randrange(100) < 65:
+                varied = varied.replace(". ", " ")
         return self.apply_reply_habits(account_key, varied, seed=seed, profile=profile)
 
     def apply_reply_habits(
@@ -291,11 +328,21 @@ class PersonaService:
             return result
         rng = random.Random(seed + ":habits")
         period_percent = int(profile["terminal_period_percent"])
+        effective_literacy = max(1, int(profile["literacy_level"]) - 1)
+        punctuation_error_percent = 100 - int(
+            profile["punctuation_accuracy_percent"]
+        )
         if result.endswith(".") and not result.endswith("..."):
             if rng.randrange(100) >= period_percent:
                 result = result[:-1].rstrip()
         elif result[-1] not in "!?…" and rng.randrange(100) < period_percent:
             result += "."
+        if (
+            effective_literacy <= 2
+            and result.endswith(("?", "!"))
+            and rng.randrange(100) < punctuation_error_percent // 3
+        ):
+            result = result[:-1].rstrip()
         if result[0].isalpha() and rng.randrange(100) < int(
             profile["lowercase_start_percent"]
         ):

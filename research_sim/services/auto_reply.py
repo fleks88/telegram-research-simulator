@@ -240,11 +240,18 @@ class AutoReplyRuntime:
                     message_text,
                     history=history,
                 )
-            reply = self.personas.apply_reply_habits(
-                account_key,
-                reply,
-                seed=f"auto:{account_key}:{message.id}",
-            )
+            if unknown_term_to_ask:
+                reply = self.personas.apply_reply_habits(
+                    account_key,
+                    reply,
+                    seed=f"auto:{account_key}:{message.id}",
+                )
+            else:
+                reply = self.personas.stylize_scheduled_text(
+                    account_key,
+                    reply,
+                    seed=f"auto:{account_key}:{message.id}",
+                )
         except Exception:
             self.requests.set_received_message_status(
                 account_key,

@@ -97,7 +97,7 @@ class PersonaResearchService:
             message,
             history=self.requests.get_conversation_context(account_key, limit=12),
         )
-        reply = self.personas.apply_reply_habits(
+        reply = self.personas.stylize_scheduled_text(
             account_key,
             reply,
             seed=f"preview:{account_key}:{message}",
