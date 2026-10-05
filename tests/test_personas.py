@@ -46,6 +46,10 @@ class PersonaResearchTest(unittest.IsolatedAsyncioTestCase):
                     "punctuation_accuracy_percent": 82,
                 },
             )
+            prompt = personas.prompt_fragment("research_a")
+            self.assertIn("UC («юц») — внутриигровая валюта PUBG", prompt)
+            self.assertIn("@paygamesorg_bot", prompt)
+            self.assertIn("коротко переспроси", prompt)
             responder = FakeDialogueResponder()
             service = PersonaResearchService(requests, personas, responder)
             targets = [f"Static test reply {index}" for index in range(1, 6)]
