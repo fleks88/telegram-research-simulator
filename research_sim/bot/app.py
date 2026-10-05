@@ -206,6 +206,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not _is_authorized(update, context):
         await _deny(update)
         return
+    # /start is also the reliable escape hatch from any abandoned wizard.
+    context.user_data.clear()
     await update.effective_message.reply_text(
         "Панель управления исследовательским стендом. Время показывается по Москве.",
         reply_markup=home_keyboard(),
@@ -1582,6 +1584,7 @@ def build_application() -> Application:
 
     conversation = ConversationHandler(
         entry_points=[
+            CommandHandler("start", start),
             CommandHandler("add_account", add_account_start),
             CommandHandler("send", send_start),
             CommandHandler("campaign_setup", campaign_setup_start),
@@ -1652,10 +1655,10 @@ def build_application() -> Application:
             CommandHandler("cancel", cancel),
             CallbackQueryHandler(cancel, pattern=r"^flow:cancel$"),
         ],
+        allow_reentry=True,
         per_message=False,
     )
     application.add_handler(conversation)
-    application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("whoami", whoami))
     application.add_handler(CommandHandler("accounts", show_accounts))
     application.add_handler(CommandHandler("history", show_history))
