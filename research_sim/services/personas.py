@@ -32,8 +32,9 @@ PUBG_DOMAIN_CONTEXT = """Предметный контекст разговор�
 
 
 class PersonaService:
-    PROFILE_VERSION = 3
-    ACCURACY_BY_LITERACY = {1: 60, 2: 68, 3: 91, 4: 95, 5: 98}
+    PROFILE_VERSION = 4
+    ACCURACY_BY_LITERACY = {1: 60, 2: 68, 3: 93, 4: 95, 5: 98}
+    LITERACY_WEIGHTS = [5, 5, 38.5, 41.5, 10]
     DEFAULT_PROFILE = {
         "profile_version": PROFILE_VERSION,
         "identity_prompt": "",
@@ -141,7 +142,10 @@ class PersonaService:
         address_style = (
             "ты" if rng.randrange(100) < style.informal_address_percent else "вы"
         )
-        literacy = rng.choices([1, 2, 3, 4, 5], weights=[5, 18, 35, 32, 10])[0]
+        literacy = rng.choices(
+            [1, 2, 3, 4, 5],
+            weights=self.LITERACY_WEIGHTS,
+        )[0]
         verbosity = rng.choices([1, 2, 3], weights=[45, 45, 10])[0]
         emoji_level = rng.choices([1, 2, 3], weights=[72, 24, 4])[0]
         terminal_period = max(
@@ -297,7 +301,13 @@ class PersonaService:
             return changed
 
         varied = WORD_PATTERN.sub(vary_word, text)
-        ensure_error_percent = {1: 31, 2: 21, 3: 7}.get(effective_literacy, 0)
+        ensure_error_percent = {
+            1: 31,
+            2: 31,
+            3: 17,
+            4: 7,
+            5: 0,
+        }[int(profile["literacy_level"])]
         if changed_words == 0 and rng.randrange(100) < ensure_error_percent:
             candidates = list(WORD_PATTERN.finditer(varied))
             if candidates:

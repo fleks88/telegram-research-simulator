@@ -49,7 +49,7 @@ class SenderAccountEnabledUpdate(BaseModel):
 class PersonaProfilePayload(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    profile_version: int = Field(default=3, ge=1)
+    profile_version: int = Field(default=4, ge=1)
     identity_prompt: str = Field(default="", max_length=2000)
     word_accuracy_percent: int = Field(default=98, ge=0, le=100)
     punctuation_accuracy_percent: int = Field(default=98, ge=0, le=100)

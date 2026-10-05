@@ -127,7 +127,7 @@ class PersonaResearchTest(unittest.IsolatedAsyncioTestCase):
             )
             personas = PersonaService(requests)
             migrated = personas.get("legacy")
-            self.assertEqual(migrated["profile_version"], 3)
+            self.assertEqual(migrated["profile_version"], 4)
             self.assertEqual(migrated["word_accuracy_percent"], 98)
             self.assertEqual(migrated["punctuation_accuracy_percent"], 98)
             self.assertEqual(migrated["lowercase_start_percent"], 10)
@@ -144,16 +144,20 @@ class PersonaResearchTest(unittest.IsolatedAsyncioTestCase):
             self.assertGreaterEqual(lowercase, 70)
             self.assertLessEqual(lowercase, 130)
 
-    def test_level_three_has_sixty_percent_fewer_errors(self) -> None:
+    def test_level_three_uses_reduced_error_rate(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             database = Database(Path(directory) / "level-three.sqlite3")
             database.initialize()
             requests = DatabaseRequests(database)
             requests.add_sender_account("medium", "Medium")
             personas = PersonaService(requests)
+            self.assertEqual(
+                personas.LITERACY_WEIGHTS,
+                [5, 5, 38.5, 41.5, 10],
+            )
             profile = personas.save("medium", {"literacy_level": 3})
-            self.assertEqual(profile["word_accuracy_percent"], 91)
-            self.assertEqual(profile["punctuation_accuracy_percent"], 91)
+            self.assertEqual(profile["word_accuracy_percent"], 93)
+            self.assertEqual(profile["punctuation_accuracy_percent"], 93)
             changed = sum(
                 personas.stylize_scheduled_text(
                     "medium",
