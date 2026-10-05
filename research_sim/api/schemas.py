@@ -49,9 +49,10 @@ class SenderAccountEnabledUpdate(BaseModel):
 class PersonaProfilePayload(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
+    profile_version: int = Field(default=2, ge=1)
     identity_prompt: str = Field(default="", max_length=2000)
-    word_accuracy_percent: int = Field(default=100, ge=0, le=100)
-    punctuation_accuracy_percent: int = Field(default=100, ge=0, le=100)
+    word_accuracy_percent: int = Field(default=95, ge=0, le=100)
+    punctuation_accuracy_percent: int = Field(default=95, ge=0, le=100)
     literacy_level: int = Field(default=5, ge=1, le=5)
     aggression_level: int = Field(default=1, ge=1, le=5)
     friendliness_level: int = Field(default=3, ge=1, le=5)
@@ -61,7 +62,7 @@ class PersonaProfilePayload(BaseModel):
     initiative_level: int = Field(default=3, ge=1, le=5)
     address_style: str = Field(default="ты", pattern="^(ты|вы)$")
     terminal_period_percent: int = Field(default=1, ge=0, le=100)
-    lowercase_start_percent: int = Field(default=5, ge=0, le=100)
+    lowercase_start_percent: int = Field(default=10, ge=0, le=100)
 
 
 class DialogueProposalRequest(BaseModel):

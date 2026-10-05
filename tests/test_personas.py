@@ -71,7 +71,7 @@ class PersonaResearchTest(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(history[0]["id"], proposal["proposal_id"])
             self.assertEqual(len(history[0]["dialogue"]), 5)
 
-    def test_text_accuracy_transform_is_seeded_and_hundred_percent_is_unchanged(self) -> None:
+    def test_text_accuracy_transform_is_seeded_and_varies_text(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             database = Database(Path(directory) / "persona.sqlite3")
             database.initialize()
@@ -83,7 +83,7 @@ class PersonaResearchTest(unittest.IsolatedAsyncioTestCase):
             default_result = personas.stylize_scheduled_text(
                 "plain", source, seed="fixed"
             )
-            self.assertEqual(default_result, "Testing the dialogue, carefully")
+            self.assertTrue(default_result.startswith("Testing the dialogue"))
             personas.save(
                 "plain",
                 {
@@ -96,6 +96,49 @@ class PersonaResearchTest(unittest.IsolatedAsyncioTestCase):
             second = personas.stylize_scheduled_text("plain", source, seed="fixed")
             self.assertEqual(first, second)
             self.assertNotEqual(first, source)
+
+    def test_old_profiles_shift_literacy_and_capitalization_defaults(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            database = Database(Path(directory) / "migration.sqlite3")
+            database.initialize()
+            requests = DatabaseRequests(database)
+            requests.add_sender_account("legacy", "Legacy")
+            requests.save_sender_persona(
+                "legacy",
+                {
+                    "identity_prompt": "old profile",
+                    "word_accuracy_percent": 100,
+                    "punctuation_accuracy_percent": 100,
+                    "literacy_level": 5,
+                    "aggression_level": 1,
+                    "friendliness_level": 3,
+                    "verbosity_level": 3,
+                    "humor_level": 2,
+                    "emoji_level": 1,
+                    "initiative_level": 3,
+                    "address_style": "ты",
+                    "terminal_period_percent": 1,
+                    "lowercase_start_percent": 5,
+                },
+            )
+            personas = PersonaService(requests)
+            migrated = personas.get("legacy")
+            self.assertEqual(migrated["profile_version"], 2)
+            self.assertEqual(migrated["word_accuracy_percent"], 95)
+            self.assertEqual(migrated["punctuation_accuracy_percent"], 95)
+            self.assertEqual(migrated["lowercase_start_percent"], 10)
+            self.assertIn("Грамотность: 4 из 5", personas.prompt_fragment("legacy"))
+
+            lowercase = sum(
+                personas.apply_reply_habits(
+                    "legacy",
+                    "Привет?",
+                    seed=f"capital:{index}",
+                ).startswith("п")
+                for index in range(1000)
+            )
+            self.assertGreaterEqual(lowercase, 70)
+            self.assertLessEqual(lowercase, 130)
 
     def test_export_aggregates_and_random_profile_are_stored(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

@@ -12,6 +12,7 @@ from .term_knowledge import TermKnowledgeService
 
 WORD_PATTERN = re.compile(r"[A-Za-zА-Яа-яЁё]{4,}")
 PUNCTUATION_PATTERN = re.compile(r"[,;:!?\.]")
+CYRILLIC_LETTERS = "абвгдежзийклмнопрстуфхцчшщыэюя"
 PUBG_DOMAIN_CONTEXT = """Предметный контекст разговора:
 - UC («юц») — внутриигровая валюта PUBG.
 - «Вход», «по входу», «UC по/через входу» — продавец входит в PUBG-аккаунт покупателя и пополняет UC через игровой клиент. Вход бывает по QR-коду либо по почте и коду.
@@ -29,10 +30,13 @@ PUBG_DOMAIN_CONTEXT = """Предметный контекст разговор�
 
 
 class PersonaService:
+    PROFILE_VERSION = 2
+    ACCURACY_BY_LITERACY = {1: 60, 2: 68, 3: 78, 4: 88, 5: 95}
     DEFAULT_PROFILE = {
+        "profile_version": PROFILE_VERSION,
         "identity_prompt": "",
-        "word_accuracy_percent": 100,
-        "punctuation_accuracy_percent": 100,
+        "word_accuracy_percent": 95,
+        "punctuation_accuracy_percent": 95,
         "literacy_level": 5,
         "aggression_level": 1,
         "friendliness_level": 3,
@@ -42,7 +46,7 @@ class PersonaService:
         "initiative_level": 3,
         "address_style": "ты",
         "terminal_period_percent": 1,
-        "lowercase_start_percent": 5,
+        "lowercase_start_percent": 10,
     }
 
     def __init__(self, requests: Any, corpus_path: Path | None = None) -> None:
@@ -53,11 +57,26 @@ class PersonaService:
 
     def get(self, account_key: str) -> Dict[str, Any]:
         saved = self.requests.get_sender_persona(account_key) or {}
+        if saved and int(saved.get("profile_version", 1)) < self.PROFILE_VERSION:
+            literacy = int(saved.get("literacy_level", 5))
+            saved = self.save(
+                account_key,
+                {
+                    **saved,
+                    "profile_version": self.PROFILE_VERSION,
+                    "word_accuracy_percent": self.ACCURACY_BY_LITERACY[literacy],
+                    "punctuation_accuracy_percent": self.ACCURACY_BY_LITERACY[
+                        literacy
+                    ],
+                    "lowercase_start_percent": 10,
+                },
+            )
         return {**self.DEFAULT_PROFILE, **saved}
 
     def save(self, account_key: str, profile: Dict[str, Any]) -> Dict[str, Any]:
         merged = {**self.DEFAULT_PROFILE, **profile}
         normalized = {
+            "profile_version": int(merged["profile_version"]),
             "identity_prompt": str(merged["identity_prompt"]).strip(),
             "word_accuracy_percent": int(merged["word_accuracy_percent"]),
             "punctuation_accuracy_percent": int(merged["punctuation_accuracy_percent"]),
@@ -87,6 +106,8 @@ class PersonaService:
                 raise ValueError(f"{key} must be between 0 and 100")
         if normalized["address_style"] not in {"ты", "вы"}:
             raise ValueError("address_style must be ты or вы")
+        if normalized["profile_version"] < 1:
+            raise ValueError("profile_version must be positive")
         if len(normalized["identity_prompt"]) > 2000:
             raise ValueError("identity_prompt must be 2000 characters or fewer")
         for key in (
@@ -110,17 +131,14 @@ class PersonaService:
         address_style = (
             "ты" if rng.randrange(100) < style.informal_address_percent else "вы"
         )
-        literacy = rng.choices([2, 3, 4, 5], weights=[10, 35, 40, 15])[0]
+        literacy = rng.choices([1, 2, 3, 4, 5], weights=[5, 18, 35, 32, 10])[0]
         verbosity = rng.choices([1, 2, 3], weights=[45, 45, 10])[0]
         emoji_level = rng.choices([1, 2, 3], weights=[72, 24, 4])[0]
         terminal_period = max(
             0,
             min(6, style.terminal_period_percent + rng.randint(-1, 3)),
         )
-        lowercase_start = max(
-            0,
-            min(25, style.lowercase_start_percent + rng.randint(-3, 8)),
-        )
+        lowercase_start = 10
         length_hint = max(2, min(8, style.median_words + rng.randint(-1, 3)))
         temperament = rng.choice(
             [
@@ -142,11 +160,12 @@ class PersonaService:
             "В конце коротких реплик обычно не ставь точку. "
             f"{emoji_hint.capitalize()}. Сохраняй этот стиль во всём диалоге."
         )
-        accuracy = {2: 80, 3: 89, 4: 96, 5: 100}[literacy]
+        accuracy = self.ACCURACY_BY_LITERACY[literacy]
         return self.save(
             account_key,
             {
                 "identity_prompt": identity,
+                "profile_version": self.PROFILE_VERSION,
                 "word_accuracy_percent": accuracy,
                 "punctuation_accuracy_percent": accuracy,
                 "literacy_level": literacy,
@@ -177,7 +196,6 @@ class PersonaService:
     def prompt_fragment(self, account_key: str) -> str:
         profile = self.get(account_key)
         labels = {
-            "literacy_level": "Грамотность",
             "aggression_level": "Резкость и напористость",
             "friendliness_level": "Дружелюбность",
             "verbosity_level": "Разговорчивость",
@@ -186,12 +204,21 @@ class PersonaService:
             "initiative_level": "Инициативность",
         }
         lines = ["Профиль текущего отправителя:"]
+        effective_literacy = max(1, int(profile["literacy_level"]) - 1)
+        lines.append(f"- Грамотность: {effective_literacy} из 5")
         lines.extend(f"- {label}: {profile[key]} из 5" for key, label in labels.items())
         lines.append(f"- Обращение к собеседнику: только на «{profile['address_style']}»")
         lines.append(
             "- Точка в конце сообщения: примерно "
             f"{profile['terminal_period_percent']}% коротких реплик"
         )
+        if effective_literacy <= 2:
+            lines.append(
+                "- Иногда допускай естественные опечатки или простые ошибки, "
+                "но не в каждом слове и без потери смысла"
+            )
+        elif effective_literacy <= 3:
+            lines.append("- Допускай редкие разговорные ошибки и опечатки")
         if profile["identity_prompt"]:
             lines.append("- Дополнительное описание: " + profile["identity_prompt"])
         lines.append("Резкость не разрешает угрозы, травлю или оскорбления.")
@@ -220,7 +247,21 @@ class PersonaService:
                 return word
             index = rng.randrange(1, len(word) - 1)
             letters = list(word)
-            letters[index], letters[index + 1] = letters[index + 1], letters[index]
+            literacy = int(profile["literacy_level"])
+            error_kind = rng.choice(
+                ["transpose", "delete", "replace"]
+                if literacy <= 2
+                else ["transpose", "transpose", "replace"]
+            )
+            if error_kind == "delete" and len(letters) > 4:
+                del letters[index]
+            elif error_kind == "replace" and letters[index].casefold() in CYRILLIC_LETTERS:
+                replacement = rng.choice(CYRILLIC_LETTERS)
+                letters[index] = (
+                    replacement.upper() if letters[index].isupper() else replacement
+                )
+            else:
+                letters[index], letters[index + 1] = letters[index + 1], letters[index]
             return "".join(letters)
 
         varied = WORD_PATTERN.sub(vary_word, text)

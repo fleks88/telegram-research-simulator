@@ -849,7 +849,7 @@ async def _register_new_account(
         f"({account['account_key']}).\n\n"
         "Личность создана автоматически и сохранена:\n"
         f"• обращение: на «{profile['address_style']}»\n"
-        f"• грамотность: {profile['literacy_level']}/5\n"
+        f"• грамотность: {max(1, profile['literacy_level'] - 1)}/5\n"
         f"• резкость: {profile['aggression_level']}/5\n"
         f"• разговорчивость: {profile['verbosity_level']}/5\n"
         f"• точка в конце: {profile['terminal_period_percent']}%\n\n"
@@ -912,7 +912,7 @@ async def account_identity_entered(
             return ACCOUNT_IDENTITY
     traits = context.user_data.get("profile_traits", {})
     literacy = int(traits.get("literacy_level", 5))
-    accuracy_by_level = {1: 68, 2: 78, 3: 88, 4: 95, 5: 100}
+    accuracy_by_level = {1: 60, 2: 68, 3: 78, 4: 88, 5: 95}
     profile = {
         **context.user_data.get("profile_existing", {}),
         **traits,
@@ -1388,7 +1388,8 @@ async def persona_account_chosen(update: Update, context: ContextTypes.DEFAULT_T
     context.user_data["profile_traits"] = {}
     context.user_data["trait_position"] = 0
     await query.edit_message_text(
-        f"Грамотность сейчас: {profile.get('literacy_level', 5)} из 5. "
+        "Грамотность сейчас: "
+        f"{max(1, profile.get('literacy_level', 5) - 1)} из 5. "
         "Выберите новое значение:",
         reply_markup=trait_keyboard(),
     )
