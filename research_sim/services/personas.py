@@ -3,6 +3,7 @@ from __future__ import annotations
 import random
 import re
 import secrets
+from difflib import SequenceMatcher
 from pathlib import Path
 from typing import Any, Dict
 
@@ -13,6 +14,7 @@ from .term_knowledge import TermKnowledgeService
 WORD_PATTERN = re.compile(r"[A-Za-zА-Яа-яЁё]{4,}")
 PUNCTUATION_PATTERN = re.compile(r"[,;:!?\.]")
 CYRILLIC_LETTERS = "абвгдежзийклмнопрстуфхцчшщыэюя"
+PAYMENT_NOTICE_MARKERS = ("заявк", "сумм")
 PUBG_DOMAIN_CONTEXT = """Предметный контекст разговора:
 - UC («юц») — внутриигровая валюта PUBG.
 - «Вход», «по входу», «UC по/через входу» — продавец входит в PUBG-аккаунт покупателя и пополняет UC через игровой клиент. Вход бывает по QR-коду либо по почте и коду.
@@ -370,3 +372,84 @@ class PersonaService:
                 f"не понял, что ты имеешь в виду под «{term}»?",
             ]
         return random.Random(seed + ":term-question").choice(variants)
+
+    def payment_notice_reply(
+        self,
+        account_key: str,
+        incoming_text: str,
+        *,
+        history: list[Dict[str, Any]],
+        seed: str,
+    ) -> str | None:
+        lowered = incoming_text.casefold()
+        is_notice = (
+            all(marker in lowered for marker in PAYMENT_NOTICE_MARKERS)
+            and ("платеж" in lowered or "оплат" in lowered)
+        ) or "paygamesorg_bot" in lowered
+        if not is_notice:
+            return None
+
+        profile = self.get(account_key)
+        polite = profile["address_style"] == "вы"
+        candidates = [
+            "Банк оплату отклоняет это нормально?",
+            "У меня оплата не проходит можно как-то иначе?",
+            "Что-то банк не дает оплатить, что делать?",
+            "Почему-то платеж блокируется, такое бывает?",
+            "Не могу оплатить банк отклоняет",
+            "Оплата не проходит, другую ссылку можно?",
+            "Банк ругается на платеж это норм?",
+            "СБП не проходит почему-то",
+            "Мне банк не дает это оплатить",
+            "Платеж отклоняется, можно другим способом?",
+            "Чет с оплатой не выходит банк блокает",
+            "Не дает оплатить, ссылка точно рабочая?",
+        ]
+        if polite:
+            candidates.extend(
+                [
+                    "Подскажите, почему банк отклоняет оплату?",
+                    "Можете другую ссылку дать? Эта не проходит",
+                ]
+            )
+        else:
+            candidates.extend(
+                [
+                    "Подскажи че банк оплату не пропускает?",
+                    "Можешь другую ссылку дать? Эта не проходит",
+                ]
+            )
+        if profile["aggression_level"] >= 4:
+            candidates.extend(
+                [
+                    "Почему банк это блокает?",
+                    "Опять не проходит, другой способ есть?",
+                ]
+            )
+        if any(marker in lowered for marker in ("мошенн", "подозр", "fraud")):
+            candidates.extend(
+                [
+                    "Банк пишет что платеж подозрительный это норм?",
+                    "Тут предупреждение про мошенников, так и должно быть?",
+                    "Банк ругается что это может быть мошенничество",
+                ]
+            )
+
+        def normalize(value: str) -> str:
+            return re.sub(r"[^a-zа-яё0-9]+", " ", value.casefold()).strip()
+
+        recent = [
+            normalize(row["message_text"])
+            for row in history
+            if row.get("direction") == "outgoing" and row.get("message_text")
+        ][-8:]
+        fresh = [
+            candidate
+            for candidate in candidates
+            if all(
+                SequenceMatcher(None, normalize(candidate), previous).ratio() < 0.68
+                for previous in recent
+            )
+        ]
+        pool = fresh or candidates
+        return random.Random(seed + ":payment-notice").choice(pool)

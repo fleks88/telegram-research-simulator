@@ -201,9 +201,17 @@ class AutoReplyRuntime:
                     self.requests.clear_pending_term_question(account_key)
                     pending_term = None
 
+            payment_reply = self.personas.payment_notice_reply(
+                account_key,
+                message_text,
+                history=history,
+                seed=f"payment:{account_key}:{message.id}",
+            )
             prompt = self._compose_prompt(account_key, config["reply_prompt"])
             analyzer = getattr(self.responder, "create_reply_analysis", None)
-            if callable(analyzer):
+            if payment_reply is not None:
+                reply = payment_reply
+            elif callable(analyzer):
                 analysis = await analyzer(
                     prompt,
                     message_text,

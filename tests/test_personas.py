@@ -174,6 +174,46 @@ class PersonaResearchTest(unittest.IsolatedAsyncioTestCase):
             self.assertGreaterEqual(sum(result != source for result in results), 70)
             self.assertGreaterEqual(sum("," not in result for result in results), 30)
 
+    def test_payment_notice_reply_avoids_recent_wording(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            database = Database(Path(directory) / "payments.sqlite3")
+            database.initialize()
+            requests = DatabaseRequests(database)
+            requests.add_sender_account("buyer", "Buyer")
+            personas = PersonaService(requests)
+            notice = (
+                "Платеж · СБП Сумма: 8,000 ₽ "
+                "Заявка: Q8HNFSLCW08W Нажмите кнопку для оплаты"
+            )
+            first = personas.payment_notice_reply(
+                "buyer",
+                notice,
+                history=[],
+                seed="first",
+            )
+            second = personas.payment_notice_reply(
+                "buyer",
+                notice,
+                history=[
+                    {
+                        "direction": "outgoing",
+                        "message_text": first,
+                    }
+                ],
+                seed="second",
+            )
+            self.assertIsNotNone(first)
+            self.assertIsNotNone(second)
+            self.assertNotEqual(first, second)
+            self.assertIsNone(
+                personas.payment_notice_reply(
+                    "buyer",
+                    "Сколько стоит 8100 UC?",
+                    history=[],
+                    seed="not-payment",
+                )
+            )
+
     def test_export_aggregates_and_random_profile_are_stored(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
