@@ -170,7 +170,6 @@ class AutoReplyRuntime:
         minimum = int(config.get("reply_delay_min_minutes", 2))
         maximum = int(config.get("reply_delay_max_minutes", 180))
         delay_seconds = random.randint(minimum * 60, maximum * 60)
-        prompt = self._compose_prompt(account_key, config["reply_prompt"])
         history = self.requests.get_conversation_context(account_key, limit=12)
         if (
             history
@@ -179,11 +178,68 @@ class AutoReplyRuntime:
         ):
             history = history[:-1]
         try:
-            reply = await self.responder.create_reply(
-                prompt,
-                message_text,
-                history=history,
-            )
+            unknown_term_to_ask: str | None = None
+            pending_term = self.requests.get_pending_term_question(account_key)
+            extractor = getattr(self.responder, "extract_term_explanation", None)
+            if pending_term is not None and callable(extractor):
+                try:
+                    definition = await extractor(
+                        term=pending_term["display_term"],
+                        incoming_text=message_text,
+                    )
+                except Exception:
+                    definition = None
+                    LOGGER.exception(
+                        "Could not extract an explanation for term %s",
+                        pending_term["display_term"],
+                    )
+                if definition and self.personas.knowledge.remember(
+                    term=pending_term["display_term"],
+                    definition=definition,
+                    account_key=account_key,
+                ):
+                    self.requests.clear_pending_term_question(account_key)
+                    pending_term = None
+
+            prompt = self._compose_prompt(account_key, config["reply_prompt"])
+            analyzer = getattr(self.responder, "create_reply_analysis", None)
+            if callable(analyzer):
+                analysis = await analyzer(
+                    prompt,
+                    message_text,
+                    history=history,
+                )
+                reply = analysis["reply"] or ""
+                unknown_term = analysis.get("unknown_term")
+                if unknown_term:
+                    learned = self.personas.knowledge.lookup(unknown_term)
+                    if learned is not None:
+                        reply = await self.responder.create_reply(
+                            prompt
+                            + "\n\nНайденное в БД определение: "
+                            + learned["display_term"]
+                            + " — "
+                            + learned["definition"],
+                            message_text,
+                            history=history,
+                        )
+                    elif pending_term is None:
+                        normalized = self.personas.knowledge.normalize_term(
+                            unknown_term
+                        )
+                        if normalized is not None:
+                            unknown_term_to_ask = normalized[1]
+                            reply = self.personas.clarification_question(
+                                account_key,
+                                unknown_term_to_ask,
+                                seed=f"term:{account_key}:{message.id}",
+                            )
+            else:
+                reply = await self.responder.create_reply(
+                    prompt,
+                    message_text,
+                    history=history,
+                )
             reply = self.personas.apply_reply_habits(
                 account_key,
                 reply,
@@ -202,6 +258,7 @@ class AutoReplyRuntime:
             telegram_message_id=int(message.id),
             due_at=time.time() + delay_seconds,
             reply_text=reply,
+            unknown_term=unknown_term_to_ask,
         )
 
     def _compose_prompt(self, account_key: str, prompt: str) -> str:
@@ -263,5 +320,12 @@ class AutoReplyRuntime:
             self.requests.set_received_message_status(
                 row["account_key"], row["telegram_message_id"], "replied"
             )
+            if row.get("unknown_term") and self.personas.knowledge.lookup(
+                row["unknown_term"]
+            ) is None:
+                self.personas.knowledge.mark_pending(
+                    row["account_key"],
+                    row["unknown_term"],
+                )
             sent += 1
         return sent

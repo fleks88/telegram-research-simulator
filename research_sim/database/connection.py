@@ -66,6 +66,7 @@ CREATE TABLE IF NOT EXISTS pending_auto_replies (
     created_at REAL NOT NULL,
     processed_at REAL,
     reply_text TEXT,
+    unknown_term TEXT,
     error TEXT,
     UNIQUE (account_key, telegram_message_id)
 );
@@ -88,6 +89,22 @@ CREATE TABLE IF NOT EXISTS activation_sync_state (
     id INTEGER PRIMARY KEY CHECK (id = 1),
     state_json TEXT NOT NULL,
     updated_at REAL NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS learned_terms (
+    term_key TEXT PRIMARY KEY,
+    display_term TEXT NOT NULL,
+    definition TEXT NOT NULL,
+    source_account_key TEXT NOT NULL,
+    created_at REAL NOT NULL,
+    updated_at REAL NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS pending_term_questions (
+    account_key TEXT PRIMARY KEY REFERENCES telegram_accounts(account_key) ON DELETE CASCADE,
+    term_key TEXT NOT NULL,
+    display_term TEXT NOT NULL,
+    asked_at REAL NOT NULL
 );
 
 CREATE UNIQUE INDEX IF NOT EXISTS idx_campaign_delivery_slot
@@ -147,6 +164,10 @@ class Database:
             if "reply_text" not in pending_columns:
                 connection.execute(
                     "ALTER TABLE pending_auto_replies ADD COLUMN reply_text TEXT"
+                )
+            if "unknown_term" not in pending_columns:
+                connection.execute(
+                    "ALTER TABLE pending_auto_replies ADD COLUMN unknown_term TEXT"
                 )
             connection.execute(
                 """CREATE INDEX IF NOT EXISTS idx_message_delivery_sender_time

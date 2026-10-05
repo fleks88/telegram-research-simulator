@@ -61,6 +61,94 @@ class DatabaseRequests:
             )
             return True
 
+    def get_learned_term(self, term_key: str) -> Optional[Dict[str, Any]]:
+        with self.database.connect() as connection:
+            row = connection.execute(
+                """SELECT term_key, display_term, definition, source_account_key,
+                          created_at, updated_at
+                   FROM learned_terms WHERE term_key = ?""",
+                (term_key,),
+            ).fetchone()
+        return dict(row) if row is not None else None
+
+    def list_learned_terms(self, *, limit: int = 200) -> list[Dict[str, Any]]:
+        with self.database.connect() as connection:
+            rows = connection.execute(
+                """SELECT term_key, display_term, definition, source_account_key,
+                          created_at, updated_at
+                   FROM learned_terms ORDER BY updated_at DESC LIMIT ?""",
+                (limit,),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def save_learned_term(
+        self,
+        *,
+        term_key: str,
+        display_term: str,
+        definition: str,
+        source_account_key: str,
+    ) -> None:
+        now = time.time()
+        with self.database.connect() as connection:
+            connection.execute(
+                """INSERT INTO learned_terms
+                   (term_key, display_term, definition, source_account_key,
+                    created_at, updated_at)
+                   VALUES (?, ?, ?, ?, ?, ?)
+                   ON CONFLICT(term_key) DO UPDATE SET
+                       display_term = excluded.display_term,
+                       definition = excluded.definition,
+                       source_account_key = excluded.source_account_key,
+                       updated_at = excluded.updated_at""",
+                (
+                    term_key,
+                    display_term,
+                    definition,
+                    source_account_key,
+                    now,
+                    now,
+                ),
+            )
+
+    def get_pending_term_question(
+        self,
+        account_key: str,
+    ) -> Optional[Dict[str, Any]]:
+        with self.database.connect() as connection:
+            row = connection.execute(
+                """SELECT account_key, term_key, display_term, asked_at
+                   FROM pending_term_questions WHERE account_key = ?""",
+                (account_key,),
+            ).fetchone()
+        return dict(row) if row is not None else None
+
+    def set_pending_term_question(
+        self,
+        *,
+        account_key: str,
+        term_key: str,
+        display_term: str,
+    ) -> None:
+        with self.database.connect() as connection:
+            connection.execute(
+                """INSERT INTO pending_term_questions
+                   (account_key, term_key, display_term, asked_at)
+                   VALUES (?, ?, ?, ?)
+                   ON CONFLICT(account_key) DO UPDATE SET
+                       term_key = excluded.term_key,
+                       display_term = excluded.display_term,
+                       asked_at = excluded.asked_at""",
+                (account_key, term_key, display_term, time.time()),
+            )
+
+    def clear_pending_term_question(self, account_key: str) -> None:
+        with self.database.connect() as connection:
+            connection.execute(
+                "DELETE FROM pending_term_questions WHERE account_key = ?",
+                (account_key,),
+            )
+
     def save_dialogue_proposal(
         self,
         account_key: str,
@@ -182,13 +270,22 @@ class DatabaseRequests:
         telegram_message_id: int,
         due_at: float,
         reply_text: str,
+        unknown_term: Optional[str] = None,
     ) -> bool:
         with self.database.connect() as connection:
             cursor = connection.execute(
                 """INSERT OR IGNORE INTO pending_auto_replies
-                   (account_key, telegram_message_id, due_at, reply_text, created_at)
-                   VALUES (?, ?, ?, ?, ?)""",
-                (account_key, telegram_message_id, due_at, reply_text, time.time()),
+                   (account_key, telegram_message_id, due_at, reply_text,
+                    unknown_term, created_at)
+                   VALUES (?, ?, ?, ?, ?, ?)""",
+                (
+                    account_key,
+                    telegram_message_id,
+                    due_at,
+                    reply_text,
+                    unknown_term,
+                    time.time(),
+                ),
             )
             return cursor.rowcount == 1
 
@@ -209,7 +306,7 @@ class DatabaseRequests:
             )
             rows = connection.execute(
                 """SELECT q.id, q.account_key, q.telegram_message_id, q.due_at,
-                          q.reply_text, r.message_text
+                          q.reply_text, q.unknown_term, r.message_text
                    FROM pending_auto_replies q
                    JOIN received_messages r
                      ON r.account_key = q.account_key

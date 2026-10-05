@@ -47,6 +47,32 @@ class FakeResponder:
         return f"{prompt}: {incoming_text}"
 
 
+class LearningResponder(FakeResponder):
+    async def create_reply_analysis(
+        self,
+        prompt: str,
+        incoming_text: str,
+        **kwargs: Any,
+    ) -> dict[str, Optional[str]]:
+        self.histories.append(kwargs.get("history", []))
+        if "фробус" in incoming_text and not incoming_text.startswith("это"):
+            return {"reply": "что такое фробус?", "unknown_term": "фробус"}
+        return {"reply": "понял", "unknown_term": None}
+
+    async def extract_term_explanation(
+        self,
+        *,
+        term: str,
+        incoming_text: str,
+    ) -> Optional[str]:
+        if term == "фробус" and incoming_text.startswith("это"):
+            return "тестовый пакет игровой валюты"
+        return None
+
+    async def create_reply(self, prompt: str, incoming_text: str, **kwargs: Any) -> str:
+        return "нашел значение в общей базе"
+
+
 class AutoReplyRuntimeTest(unittest.IsolatedAsyncioTestCase):
     async def test_session_json_can_supply_per_account_api_credentials(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -130,6 +156,69 @@ class AutoReplyRuntimeTest(unittest.IsolatedAsyncioTestCase):
                     "SELECT reply_status FROM received_messages WHERE telegram_message_id = 2"
                 ).fetchone()
             self.assertEqual(row["reply_status"], "replied")
+
+    async def test_unknown_term_is_learned_and_shared_after_question_is_sent(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            database = Database(Path(directory) / "knowledge.sqlite3")
+            database.initialize()
+            requests = DatabaseRequests(database)
+            requests.add_sender_account("acc1", "Account 1")
+            requests.add_sender_account("acc2", "Account 2")
+            requests.save_campaign_settings(
+                {
+                    "auto_reply_enabled": True,
+                    "reply_prompt": "Test prompt",
+                    "reply_delay_min_minutes": 0,
+                    "reply_delay_max_minutes": 0,
+                    "recipient": "central_user",
+                }
+            )
+            settings = Settings(
+                database_path=Path(directory) / "knowledge.sqlite3",
+                api_token="token",
+                telegram_api_id=123,
+                telegram_api_hash="hash",
+                telegram_session_dir=Path(directory) / "sessions",
+                allowed_recipients={"central_user"},
+                minimum_send_interval_seconds=0,
+                llm_api_key="test-key",
+            )
+            messaging = FakeMessaging()
+            runtime = AutoReplyRuntime(
+                settings,
+                requests,
+                TelethonSender(settings, client_factory=lambda **kwargs: None),
+                messaging,
+                LearningResponder(),
+            )
+
+            await runtime._handle_message(
+                "acc1", 9001, FakeEvent(1, 9001, "что по фробусу")
+            )
+            self.assertIsNone(requests.get_pending_term_question("acc1"))
+            await runtime.process_due_replies()
+            self.assertEqual(
+                requests.get_pending_term_question("acc1")["display_term"],
+                "фробус",
+            )
+
+            await runtime._handle_message(
+                "acc1",
+                9001,
+                FakeEvent(2, 9001, "это тестовый пакет игровой валюты"),
+            )
+            self.assertIsNone(requests.get_pending_term_question("acc1"))
+            self.assertEqual(
+                requests.get_learned_term("фробус")["definition"],
+                "тестовый пакет игровой валюты",
+            )
+
+            await runtime._handle_message(
+                "acc2", 9001, FakeEvent(3, 9001, "что по фробусу")
+            )
+            await runtime.process_due_replies()
+            self.assertIsNone(requests.get_pending_term_question("acc2"))
+            self.assertEqual(messaging.sent[-1][1], "нашел значение в общей базе")
 
 
 if __name__ == "__main__":

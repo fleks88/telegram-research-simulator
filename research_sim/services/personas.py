@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any, Dict
 
 from .persona_corpus import CorpusStyle, analyze_telegram_export
+from .term_knowledge import TermKnowledgeService
 
 
 WORD_PATTERN = re.compile(r"[A-Za-zА-Яа-яЁё]{4,}")
@@ -48,6 +49,7 @@ class PersonaService:
         self.requests = requests
         self.corpus_path = corpus_path
         self._corpus_style: CorpusStyle | None = None
+        self.knowledge = TermKnowledgeService(requests)
 
     def get(self, account_key: str) -> Dict[str, Any]:
         saved = self.requests.get_sender_persona(account_key) or {}
@@ -194,6 +196,9 @@ class PersonaService:
             lines.append("- Дополнительное описание: " + profile["identity_prompt"])
         lines.append("Резкость не разрешает угрозы, травлю или оскорбления.")
         lines.extend(["", PUBG_DOMAIN_CONTEXT])
+        learned = self.knowledge.learned_prompt()
+        if learned:
+            lines.extend(["", learned])
         return "\n".join(lines)
 
     def stylize_scheduled_text(
@@ -255,3 +260,25 @@ class PersonaService:
         ):
             result = result[0].lower() + result[1:]
         return result
+
+    def clarification_question(
+        self,
+        account_key: str,
+        term: str,
+        *,
+        seed: str,
+    ) -> str:
+        profile = self.get(account_key)
+        if profile["address_style"] == "вы":
+            variants = [
+                f"а что значит «{term}»?",
+                f"подскажите, что такое «{term}»?",
+                f"не понял, что вы имеете в виду под «{term}»?",
+            ]
+        else:
+            variants = [
+                f"а что значит «{term}»?",
+                f"подскажи, что такое «{term}»?",
+                f"не понял, что ты имеешь в виду под «{term}»?",
+            ]
+        return random.Random(seed + ":term-question").choice(variants)
