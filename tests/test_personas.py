@@ -127,9 +127,9 @@ class PersonaResearchTest(unittest.IsolatedAsyncioTestCase):
             )
             personas = PersonaService(requests)
             migrated = personas.get("legacy")
-            self.assertEqual(migrated["profile_version"], 2)
-            self.assertEqual(migrated["word_accuracy_percent"], 95)
-            self.assertEqual(migrated["punctuation_accuracy_percent"], 95)
+            self.assertEqual(migrated["profile_version"], 3)
+            self.assertEqual(migrated["word_accuracy_percent"], 98)
+            self.assertEqual(migrated["punctuation_accuracy_percent"], 98)
             self.assertEqual(migrated["lowercase_start_percent"], 10)
             self.assertIn("Грамотность: 4 из 5", personas.prompt_fragment("legacy"))
 
@@ -143,6 +143,28 @@ class PersonaResearchTest(unittest.IsolatedAsyncioTestCase):
             )
             self.assertGreaterEqual(lowercase, 70)
             self.assertLessEqual(lowercase, 130)
+
+    def test_level_three_has_sixty_percent_fewer_errors(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            database = Database(Path(directory) / "level-three.sqlite3")
+            database.initialize()
+            requests = DatabaseRequests(database)
+            requests.add_sender_account("medium", "Medium")
+            personas = PersonaService(requests)
+            profile = personas.save("medium", {"literacy_level": 3})
+            self.assertEqual(profile["word_accuracy_percent"], 91)
+            self.assertEqual(profile["punctuation_accuracy_percent"], 91)
+            changed = sum(
+                personas.stylize_scheduled_text(
+                    "medium",
+                    "Проверяем обычное сообщение?",
+                    seed=f"medium:{index}",
+                    profile=profile,
+                )
+                != "Проверяем обычное сообщение?"
+                for index in range(500)
+            )
+            self.assertLess(changed, 250)
 
     def test_low_literacy_style_survives_a_polished_base_reply(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

@@ -912,7 +912,7 @@ async def account_identity_entered(
             return ACCOUNT_IDENTITY
     traits = context.user_data.get("profile_traits", {})
     literacy = int(traits.get("literacy_level", 5))
-    accuracy_by_level = {1: 60, 2: 68, 3: 78, 4: 88, 5: 95}
+    accuracy_by_level = {1: 60, 2: 68, 3: 91, 4: 95, 5: 98}
     profile = {
         **context.user_data.get("profile_existing", {}),
         **traits,

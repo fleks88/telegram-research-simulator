@@ -312,8 +312,14 @@ class AutoReplyRuntime:
                             row["account_key"], limit=12
                         ),
                     )
+                recipient = next(iter(self.settings.allowed_recipients))
+                await self.sender.mark_read_and_type(
+                    row["account_key"],
+                    recipient,
+                    typing_seconds=random.randint(6, 11),
+                )
                 await self.messaging.send_message(
-                    next(iter(self.settings.allowed_recipients)),
+                    recipient,
                     reply,
                     sender_account_index=account.account_index,
                 )

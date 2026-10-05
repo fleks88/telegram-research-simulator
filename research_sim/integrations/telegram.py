@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 from io import BytesIO
 from pathlib import Path
@@ -52,6 +53,19 @@ class TelethonSender:
         client = self._clients.pop(account_key, None)
         if client is not None:
             await client.disconnect()
+
+    async def mark_read_and_type(
+        self,
+        account_key: str,
+        recipient: str,
+        *,
+        typing_seconds: int,
+    ) -> None:
+        client = await self.connect_session(account_key)
+        peer = await client.get_entity("@" + recipient)
+        await client.send_read_acknowledge(peer)
+        async with client.action(peer, "typing"):
+            await asyncio.sleep(typing_seconds)
 
     async def send_message(
         self,

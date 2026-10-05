@@ -32,13 +32,13 @@ PUBG_DOMAIN_CONTEXT = """Предметный контекст разговор�
 
 
 class PersonaService:
-    PROFILE_VERSION = 2
-    ACCURACY_BY_LITERACY = {1: 60, 2: 68, 3: 78, 4: 88, 5: 95}
+    PROFILE_VERSION = 3
+    ACCURACY_BY_LITERACY = {1: 60, 2: 68, 3: 91, 4: 95, 5: 98}
     DEFAULT_PROFILE = {
         "profile_version": PROFILE_VERSION,
         "identity_prompt": "",
-        "word_accuracy_percent": 95,
-        "punctuation_accuracy_percent": 95,
+        "word_accuracy_percent": 98,
+        "punctuation_accuracy_percent": 98,
         "literacy_level": 5,
         "aggression_level": 1,
         "friendliness_level": 3,
@@ -77,6 +77,14 @@ class PersonaService:
 
     def save(self, account_key: str, profile: Dict[str, Any]) -> Dict[str, Any]:
         merged = {**self.DEFAULT_PROFILE, **profile}
+        if "literacy_level" in profile:
+            literacy_accuracy = self.ACCURACY_BY_LITERACY[
+                int(profile["literacy_level"])
+            ]
+            if "word_accuracy_percent" not in profile:
+                merged["word_accuracy_percent"] = literacy_accuracy
+            if "punctuation_accuracy_percent" not in profile:
+                merged["punctuation_accuracy_percent"] = literacy_accuracy
         normalized = {
             "profile_version": int(merged["profile_version"]),
             "identity_prompt": str(merged["identity_prompt"]).strip(),
@@ -289,7 +297,7 @@ class PersonaService:
             return changed
 
         varied = WORD_PATTERN.sub(vary_word, text)
-        ensure_error_percent = {1: 78, 2: 52, 3: 18}.get(effective_literacy, 0)
+        ensure_error_percent = {1: 31, 2: 21, 3: 7}.get(effective_literacy, 0)
         if changed_words == 0 and rng.randrange(100) < ensure_error_percent:
             candidates = list(WORD_PATTERN.finditer(varied))
             if candidates:

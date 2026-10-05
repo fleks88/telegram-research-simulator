@@ -38,6 +38,20 @@ class FakeMessaging:
         self.sent.append((recipient, text, sender_account_index))
 
 
+class FakeReplySender:
+    def __init__(self) -> None:
+        self.prepared: list[tuple[str, str, int]] = []
+
+    async def mark_read_and_type(
+        self,
+        account_key: str,
+        recipient: str,
+        *,
+        typing_seconds: int,
+    ) -> None:
+        self.prepared.append((account_key, recipient, typing_seconds))
+
+
 class FakeResponder:
     def __init__(self) -> None:
         self.histories: list[list[dict[str, Any]]] = []
@@ -123,10 +137,11 @@ class AutoReplyRuntimeTest(unittest.IsolatedAsyncioTestCase):
             )
             messaging = FakeMessaging()
             responder = FakeResponder()
+            sender = FakeReplySender()
             runtime = AutoReplyRuntime(
                 settings,
                 requests,
-                TelethonSender(settings, client_factory=lambda **kwargs: None),
+                sender,
                 messaging,
                 responder,
             )
@@ -150,6 +165,9 @@ class AutoReplyRuntimeTest(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(messaging.sent[0][0], "central_user")
             self.assertTrue(messaging.sent[0][1].startswith("Test prompt"))
             self.assertEqual(messaging.sent[0][2], 1)
+            self.assertEqual(sender.prepared[0][:2], ("personal", "central_user"))
+            self.assertGreaterEqual(sender.prepared[0][2], 6)
+            self.assertLessEqual(sender.prepared[0][2], 11)
             self.assertEqual(responder.histories[0], [])
             with database.connect() as connection:
                 row = connection.execute(
@@ -184,10 +202,11 @@ class AutoReplyRuntimeTest(unittest.IsolatedAsyncioTestCase):
                 llm_api_key="test-key",
             )
             messaging = FakeMessaging()
+            sender = FakeReplySender()
             runtime = AutoReplyRuntime(
                 settings,
                 requests,
-                TelethonSender(settings, client_factory=lambda **kwargs: None),
+                sender,
                 messaging,
                 LearningResponder(),
             )
