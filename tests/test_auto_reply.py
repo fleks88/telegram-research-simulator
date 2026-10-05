@@ -124,8 +124,7 @@ class AutoReplyRuntimeTest(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(messaging.sent[0][0], "central_user")
             self.assertTrue(messaging.sent[0][1].startswith("Test prompt"))
             self.assertEqual(messaging.sent[0][2], 1)
-            self.assertEqual(responder.histories[0][-1]["direction"], "incoming")
-            self.assertEqual(responder.histories[0][-1]["message_text"], "hello")
+            self.assertEqual(responder.histories[0], [])
             with database.connect() as connection:
                 row = connection.execute(
                     "SELECT reply_status FROM received_messages WHERE telegram_message_id = 2"

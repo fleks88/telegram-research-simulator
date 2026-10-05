@@ -18,11 +18,12 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
 from .schemas import (
     CampaignSettingsPayload,
-    CampaignTickResponse,
     DialogueProposalRequest,
     DialogueProposalResponse,
     MessageHistoryItem,
     PersonaProfilePayload,
+    ReplyPreviewRequest,
+    ReplyPreviewResponse,
     SenderAccountCreate,
     SenderAccountEnabledUpdate,
     SenderAccountResponse,
@@ -30,7 +31,6 @@ from .schemas import (
     SendMessageResponse,
 )
 from ..services.accounts import AccountAlreadyExists
-from ..services.campaign import CampaignDisabled, CampaignNotConfigured
 from ..services.messaging import (
     MessagingService,
     RecipientNotAllowed,
@@ -138,6 +138,21 @@ def get_sender_account_history(
     return [MessageHistoryItem(**item) for item in history]
 
 
+@protected_router.get("/accounts/{account_key}/timeline")
+def get_sender_account_timeline(
+    account_key: str,
+    request: Request,
+    limit: int = Query(default=50, ge=1, le=200),
+) -> list[dict]:
+    accounts = request.app.state.account_service.list()
+    if not any(account.account_key == account_key for account in accounts):
+        raise HTTPException(status_code=404, detail="sender account not found")
+    return request.app.state.database_requests.get_account_timeline(
+        account_key,
+        limit=limit,
+    )
+
+
 @protected_router.get("/accounts/{account_key}/persona", response_model=PersonaProfilePayload)
 def get_account_persona(
     account_key: str,
@@ -187,6 +202,28 @@ async def propose_research_dialogue(
     except Exception as exc:
         raise HTTPException(status_code=502, detail="Dialogue proposal failed") from exc
     return DialogueProposalResponse(**result)
+
+
+@protected_router.post("/research/reply-preview", response_model=ReplyPreviewResponse)
+async def preview_research_reply(
+    payload: ReplyPreviewRequest,
+    request: Request,
+) -> ReplyPreviewResponse:
+    service: PersonaResearchService = request.app.state.persona_research_service
+    try:
+        result = await service.preview_reply(
+            account_key=payload.account_key,
+            incoming_text=payload.incoming_text,
+        )
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail="Reply preview failed") from exc
+    return ReplyPreviewResponse(**result)
 
 
 @protected_router.get("/accounts/{account_key}/dialogues")
@@ -325,25 +362,6 @@ async def send_message_with_photo(
         text=result.text,
         photo_attached=result.photo_attached,
     )
-
-
-@protected_router.post("/campaign/tick", response_model=CampaignTickResponse)
-async def campaign_tick(request: Request) -> CampaignTickResponse:
-    try:
-        result = await request.app.state.campaign_service.tick()
-    except CampaignNotConfigured as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
-    except CampaignDisabled as exc:
-        raise HTTPException(status_code=409, detail=str(exc)) from exc
-    except RecipientNotAllowed as exc:
-        raise HTTPException(status_code=403, detail=str(exc)) from exc
-    except SendRateLimitExceeded as exc:
-        raise HTTPException(status_code=429, detail=str(exc)) from exc
-    except RuntimeError as exc:
-        raise HTTPException(status_code=503, detail=str(exc)) from exc
-    except Exception as exc:
-        raise HTTPException(status_code=502, detail="Telegram delivery failed") from exc
-    return CampaignTickResponse(**result)
 
 
 router.include_router(protected_router)

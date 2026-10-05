@@ -80,6 +80,20 @@ class DialogueProposalResponse(BaseModel):
     dialogue: List[DialogueTurn]
 
 
+class ReplyPreviewRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    account_key: str = Field(min_length=1, max_length=48)
+    incoming_text: str = Field(min_length=1, max_length=4096)
+
+
+class ReplyPreviewResponse(BaseModel):
+    account_key: str
+    reply_prompt: str
+    incoming_text: str
+    reply_text: str
+
+
 class CampaignSettingsPayload(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -95,15 +109,6 @@ class CampaignSettingsPayload(BaseModel):
     reply_delay_max_minutes: int = Field(default=180, ge=0, le=1440)
     activation_enabled: bool = False
     activation_rules: Dict[int, int] = Field(default_factory=dict)
-
-
-class CampaignTickResponse(BaseModel):
-    status: str
-    campaign_day: Optional[int] = None
-    slot: Optional[str] = None
-    delivery_id: Optional[int] = None
-    sender_account: Optional[str] = None
-    account_index: Optional[int] = None
 
 
 class MessageHistoryItem(BaseModel):

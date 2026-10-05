@@ -65,6 +65,7 @@ CREATE TABLE IF NOT EXISTS pending_auto_replies (
         CHECK (status IN ('queued', 'processing', 'sent', 'failed', 'cancelled')),
     created_at REAL NOT NULL,
     processed_at REAL,
+    reply_text TEXT,
     error TEXT,
     UNIQUE (account_key, telegram_message_id)
 );
@@ -137,6 +138,16 @@ class Database:
             for column, statement in migrations.items():
                 if column not in columns:
                     connection.execute(statement)
+            pending_columns = {
+                row["name"]
+                for row in connection.execute(
+                    "PRAGMA table_info(pending_auto_replies)"
+                ).fetchall()
+            }
+            if "reply_text" not in pending_columns:
+                connection.execute(
+                    "ALTER TABLE pending_auto_replies ADD COLUMN reply_text TEXT"
+                )
             connection.execute(
                 """CREATE INDEX IF NOT EXISTS idx_message_delivery_sender_time
                    ON message_deliveries(sender_account, created_at DESC, id DESC)"""

@@ -1,10 +1,8 @@
 from __future__ import annotations
 
-import asyncio
 import sqlite3
 import tempfile
 import unittest
-from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -305,7 +303,76 @@ class ApiTest(unittest.TestCase):
         self.assertEqual(saved.status_code, 200)
         self.assertEqual(saved.json()[0]["id"], response.json()["proposal_id"])
 
-    def test_campaign_settings_and_scheduled_slot_are_idempotent(self) -> None:
+    def test_reply_preview_uses_configured_prompt_without_sending(self) -> None:
+        self.client.post(
+            "/api/v1/accounts",
+            headers=self.auth,
+            json={"account_key": "acc1", "label": "acc1"},
+        )
+        settings = {
+            "campaign_id": "activation-messages",
+            "enabled": False,
+            "start_date": "2026-10-05",
+            "recipient": "partner_user",
+            "phrases": ["Pack {pack}: {activations}"],
+            "day_slots": {},
+            "reply_prompt": "Configured default prompt",
+        }
+        self.assertEqual(
+            self.client.put(
+                "/api/v1/settings/campaign", headers=self.auth, json=settings
+            ).status_code,
+            200,
+        )
+
+        class FakeReplyResponder:
+            async def create_reply(self, prompt, incoming_text, **kwargs):
+                self.prompt = prompt
+                return "Preview answer"
+
+        responder = FakeReplyResponder()
+        self.app.state.persona_research_service.responder = responder
+        response = self.client.post(
+            "/api/v1/research/reply-preview",
+            headers=self.auth,
+            json={"account_key": "acc1", "incoming_text": "Human question"},
+        )
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(response.json()["reply_prompt"], "Configured default prompt")
+        self.assertEqual(response.json()["reply_text"], "Preview answer")
+        self.assertIn("Профиль текущего отправителя", responder.prompt)
+        self.assertEqual(self.sent_messages, [])
+
+    def test_timeline_contains_incoming_and_planned_reply(self) -> None:
+        self.client.post(
+            "/api/v1/accounts",
+            headers=self.auth,
+            json={"account_key": "acc1", "label": "acc1"},
+        )
+        requests = self.app.state.database_requests
+        requests.claim_received_message(
+            account_key="acc1",
+            telegram_message_id=99,
+            sender_id=123,
+            message_text="Human answer",
+        )
+        requests.enqueue_auto_reply(
+            account_key="acc1",
+            telegram_message_id=99,
+            due_at=2_000_000_000,
+            reply_text="Planned account reply",
+        )
+        response = self.client.get(
+            "/api/v1/accounts/acc1/timeline",
+            headers=self.auth,
+        )
+        self.assertEqual(response.status_code, 200, response.text)
+        by_kind = {item["kind"]: item for item in response.json()}
+        self.assertEqual(by_kind["incoming"]["message_text"], "Human answer")
+        self.assertEqual(by_kind["planned"]["message_text"], "Planned account reply")
+        self.assertEqual(by_kind["planned"]["due_at"], 2_000_000_000)
+
+    def test_time_scheduled_delivery_is_removed(self) -> None:
         payload = {
             "campaign_id": "partner-test",
             "enabled": True,
@@ -324,23 +391,11 @@ class ApiTest(unittest.TestCase):
             json=payload,
         )
         self.assertEqual(saved.status_code, 200, saved.text)
-        account_response = self.client.post(
-            "/api/v1/accounts",
-            headers=self.auth,
-            json={"account_key": "personal", "label": "Personal"},
-        )
-        self.assertEqual(account_response.status_code, 201)
-
-        campaign_service = self.app.state.campaign_service
-        now = datetime(2026, 10, 3, 10, 0)
-        first = asyncio.run(campaign_service.tick(now))
-        second = asyncio.run(campaign_service.tick(now))
-        self.assertEqual(first["status"], "sent")
-        self.assertEqual(second["status"], "already_processed")
-        self.assertEqual(
-            self.sent_messages,
-            [("personal", "@partner_user", "Approved scheduled test day 2", None)],
-        )
+        self.assertFalse(saved.json()["enabled"])
+        self.assertEqual(saved.json()["day_slots"], {})
+        tick = self.client.post("/api/v1/campaign/tick", headers=self.auth)
+        self.assertEqual(tick.status_code, 404)
+        self.assertEqual(self.sent_messages, [])
 
     def test_campaign_requires_prompt_for_auto_reply_and_valid_templates(self) -> None:
         base_payload = {

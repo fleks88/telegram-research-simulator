@@ -1,31 +1,14 @@
 from __future__ import annotations
 
-import random
 import string
-from datetime import date, datetime
-from typing import Any, Dict, Optional, Tuple
-from zoneinfo import ZoneInfo
+from typing import Any, Dict, Optional
 
-from ..database.models import CampaignSettingsRecord
 from ..database.requests import DatabaseRequests
 from ..settings import Settings
-from .messaging import (
-    DeliveryAlreadyProcessed,
-    MessagingService,
-    SendRateLimitExceeded,
-)
+from .messaging import MessagingService
 
 
-MOSCOW_TIMEZONE = ZoneInfo("Europe/Moscow")
 SUPPORTED_PACK_SIZES = {8100, 3650, 1800, 660, 325, 60}
-
-
-class CampaignNotConfigured(ValueError):
-    pass
-
-
-class CampaignDisabled(ValueError):
-    pass
 
 
 class CampaignService:
@@ -47,21 +30,8 @@ class CampaignService:
         recipient = self.messaging.validate_recipient(config["recipient"])
         config = dict(config)
         config["recipient"] = recipient
-        slots = config["day_slots"]
-        for raw_day, day_times in slots.items():
-            day = int(raw_day)
-            if day < 1 or day > 3:
-                raise ValueError("day_slots supports campaign days 1 through 3")
-            if not 1 <= len(day_times) <= 3:
-                raise ValueError("each campaign day must have 1 to 3 send slots")
-            parsed_times = [datetime.strptime(value, "%H:%M") for value in day_times]
-            if any(value.strftime("%H:%M") != original for value, original in zip(parsed_times, day_times)):
-                raise ValueError("schedule slots must use zero-padded HH:MM format")
-            minutes = [value.hour * 60 + value.minute for value in parsed_times]
-            if minutes != sorted(set(minutes)):
-                raise ValueError("schedule slots must be unique and ordered")
-            if any(later - earlier < 30 for earlier, later in zip(minutes, minutes[1:])):
-                raise ValueError("schedule slots must be at least 30 minutes apart")
+        config["enabled"] = False
+        config["day_slots"] = {}
         if not config["phrases"] or any(not phrase.strip() for phrase in config["phrases"]):
             raise ValueError("phrases must contain non-empty strings")
         allowed_template_fields = {"date", "day", "slot", "pack", "activations"}
@@ -111,68 +81,3 @@ class CampaignService:
             raise ValueError("reply_delay_min_minutes must not exceed reply_delay_max_minutes")
         self.requests.save_campaign_settings(config)
         return config
-
-    @staticmethod
-    def find_due_slot(config: Dict[str, Any], now: datetime) -> Optional[Tuple[int, str]]:
-        start_date = date.fromisoformat(config["start_date"])
-        campaign_day = (now.date() - start_date).days + 1
-        day_times = config["day_slots"].get(str(campaign_day), [])
-        current_time = now.strftime("%H:%M")
-        if current_time in day_times:
-            return campaign_day, current_time
-        return None
-
-    async def tick(self, now: Optional[datetime] = None) -> Dict[str, Any]:
-        record = self.requests.get_campaign_settings()
-        if record is None:
-            raise CampaignNotConfigured("configure a campaign before requesting a tick")
-        config = record.config
-        if not config["enabled"]:
-            raise CampaignDisabled("campaign is disabled")
-
-        current = now or datetime.now(MOSCOW_TIMEZONE)
-        if current.tzinfo is not None:
-            current = current.astimezone(MOSCOW_TIMEZONE)
-        slot = self.find_due_slot(config, current)
-        if slot is None:
-            return {"status": "not_due"}
-        campaign_day, campaign_slot = slot
-        phrase = random.choice(config["phrases"])
-        try:
-            phrase = phrase.format(
-                date=current.strftime("%Y-%m-%d"),
-                day=campaign_day,
-                slot=campaign_slot,
-                pack="",
-                activations=0,
-            )
-        except (KeyError, ValueError) as exc:
-            raise ValueError("phrase template supports only {date}, {day}, and {slot}") from exc
-        try:
-            result = await self.messaging.send_message(
-                config["recipient"],
-                phrase,
-                campaign_id=config["campaign_id"],
-                campaign_day=campaign_day,
-                campaign_slot=campaign_slot,
-            )
-        except DeliveryAlreadyProcessed:
-            return {
-                "status": "already_processed",
-                "campaign_day": campaign_day,
-                "slot": campaign_slot,
-            }
-        except SendRateLimitExceeded:
-            return {
-                "status": "rate_limited",
-                "campaign_day": campaign_day,
-                "slot": campaign_slot,
-            }
-        return {
-            "status": "sent",
-            "campaign_day": campaign_day,
-            "slot": campaign_slot,
-            "delivery_id": result.delivery_id,
-            "sender_account": result.sender_account,
-            "account_index": result.sender_account_index,
-        }

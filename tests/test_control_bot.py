@@ -11,8 +11,8 @@ from research_sim.bot.app import (
     parse_activation_rules,
     parse_activation_rules,
     parse_admin_ids,
-    parse_day_slots,
     save_session_bundle,
+    suggest_next_account_key,
     validate_session_upload,
 )
 
@@ -27,16 +27,6 @@ class ControlBotHelpersTest(unittest.TestCase):
         self.assertTrue(is_admin(12345, admin_ids))
         self.assertFalse(is_admin(11111, admin_ids))
         self.assertFalse(is_admin(None, admin_ids))
-
-    def test_schedule_parser_accepts_three_day_moscow_slots(self) -> None:
-        self.assertEqual(
-            parse_day_slots("10:00 | 10:00,15:00 | 10:30"),
-            {"1": ["10:00"], "2": ["10:00", "15:00"], "3": ["10:30"]},
-        )
-
-    def test_schedule_parser_rejects_close_slots(self) -> None:
-        with self.assertRaisesRegex(ValueError, "30 минут"):
-            parse_day_slots("10:00,10:15 | 15:00 | 10:00")
 
     def test_activation_rule_parser_supports_multipliers(self) -> None:
         self.assertEqual(
@@ -89,6 +79,11 @@ class ControlBotHelpersTest(unittest.TestCase):
                     "research_a",
                     {".session": session, ".json": metadata},
                 )
+
+    def test_next_account_name_is_suggested_in_order(self) -> None:
+        self.assertEqual(suggest_next_account_key(set()), "acc1")
+        self.assertEqual(suggest_next_account_key({"acc1", "custom"}), "acc2")
+        self.assertEqual(suggest_next_account_key({"acc1", "acc2", "acc4"}), "acc3")
 
 
 if __name__ == "__main__":

@@ -167,11 +167,37 @@ class AutoReplyRuntime:
         minimum = int(config.get("reply_delay_min_minutes", 2))
         maximum = int(config.get("reply_delay_max_minutes", 180))
         delay_seconds = random.randint(minimum * 60, maximum * 60)
+        prompt = self._compose_prompt(account_key, config["reply_prompt"])
+        history = self.requests.get_conversation_context(account_key, limit=12)
+        if (
+            history
+            and history[-1]["direction"] == "incoming"
+            and history[-1]["message_text"] == message_text
+        ):
+            history = history[:-1]
+        try:
+            reply = await self.responder.create_reply(
+                prompt,
+                message_text,
+                history=history,
+            )
+        except Exception:
+            self.requests.set_received_message_status(
+                account_key,
+                int(message.id),
+                "failed",
+            )
+            LOGGER.exception("Could not prepare automatic reply for %s", account_key)
+            return
         self.requests.enqueue_auto_reply(
             account_key=account_key,
             telegram_message_id=int(message.id),
             due_at=time.time() + delay_seconds,
+            reply_text=reply,
         )
+
+    def _compose_prompt(self, account_key: str, prompt: str) -> str:
+        return prompt.strip() + "\n\n" + self.personas.prompt_fragment(account_key)
 
     async def process_due_replies(self, *, now: float | None = None) -> int:
         rows = self.requests.claim_due_auto_replies(now=now, limit=10)
@@ -194,19 +220,18 @@ class AutoReplyRuntime:
             if account is None:
                 self.requests.requeue_auto_reply(row["id"], due_at=(now or time.time()) + 300)
                 continue
-            prompt = (
-                config["reply_prompt"].strip()
-                + "\n\n"
-                + self.personas.prompt_fragment(row["account_key"])
-            )
             try:
-                reply = await self.responder.create_reply(
-                    prompt,
-                    row["message_text"],
-                    history=self.requests.get_conversation_context(
-                        row["account_key"], limit=12
-                    ),
-                )
+                reply = row.get("reply_text")
+                if not reply:
+                    reply = await self.responder.create_reply(
+                        self._compose_prompt(
+                            row["account_key"], config["reply_prompt"]
+                        ),
+                        row["message_text"],
+                        history=self.requests.get_conversation_context(
+                            row["account_key"], limit=12
+                        ),
+                    )
                 await self.messaging.send_message(
                     next(iter(self.settings.allowed_recipients)),
                     reply,

@@ -80,6 +80,18 @@ class ApiClient:
             },
         )
 
+    async def preview_reply(
+        self,
+        *,
+        account_key: str,
+        incoming_text: str,
+    ) -> Dict[str, Any]:
+        return await self.request(
+            "POST",
+            "/api/v1/research/reply-preview",
+            json={"account_key": account_key, "incoming_text": incoming_text},
+        )
+
     async def account_dialogues(self, account_key: str, limit: int = 10) -> list[Dict[str, Any]]:
         return await self.request(
             "GET",
@@ -101,6 +113,18 @@ class ApiClient:
             "GET",
             "/api/v1/accounts/" + account_key + "/history",
             params=params,
+        )
+
+    async def account_timeline(
+        self,
+        account_key: str,
+        *,
+        limit: int = 50,
+    ) -> list[Dict[str, Any]]:
+        return await self.request(
+            "GET",
+            "/api/v1/accounts/" + account_key + "/timeline",
+            params={"limit": limit},
         )
 
     async def send_message(
@@ -149,9 +173,6 @@ class ApiClient:
             "/api/v1/settings/campaign",
             json=config,
         )
-
-    async def tick_campaign(self) -> Dict[str, Any]:
-        return await self.request("POST", "/api/v1/campaign/tick")
 
     async def activation_status(self) -> Dict[str, Any]:
         return await self.request("GET", "/api/v1/activations/status")

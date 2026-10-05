@@ -60,3 +60,38 @@ class PersonaResearchService:
         if not any(account.account_key == account_key for account in self.requests.list_sender_accounts()):
             raise KeyError("sender account not found")
         return self.requests.list_dialogue_proposals(account_key, limit=limit)
+
+    async def preview_reply(
+        self,
+        *,
+        account_key: str,
+        incoming_text: str,
+    ) -> Dict[str, str]:
+        if not any(
+            account.account_key == account_key
+            for account in self.requests.list_sender_accounts()
+        ):
+            raise KeyError("sender account not found")
+        message = incoming_text.strip()
+        if not message:
+            raise ValueError("incoming_text must not be empty")
+        campaign = self.requests.get_campaign_settings()
+        reply_prompt = (campaign.config.get("reply_prompt") if campaign else None) or ""
+        if not reply_prompt.strip():
+            raise ValueError("configure the default reply prompt first")
+        effective_prompt = (
+            reply_prompt.strip()
+            + "\n\n"
+            + self.personas.prompt_fragment(account_key)
+        )
+        reply = await self.responder.create_reply(
+            effective_prompt,
+            message,
+            history=self.requests.get_conversation_context(account_key, limit=12),
+        )
+        return {
+            "account_key": account_key,
+            "reply_prompt": reply_prompt.strip(),
+            "incoming_text": message,
+            "reply_text": reply,
+        }

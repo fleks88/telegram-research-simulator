@@ -181,13 +181,14 @@ class DatabaseRequests:
         account_key: str,
         telegram_message_id: int,
         due_at: float,
+        reply_text: str,
     ) -> bool:
         with self.database.connect() as connection:
             cursor = connection.execute(
                 """INSERT OR IGNORE INTO pending_auto_replies
-                   (account_key, telegram_message_id, due_at, created_at)
-                   VALUES (?, ?, ?, ?)""",
-                (account_key, telegram_message_id, due_at, time.time()),
+                   (account_key, telegram_message_id, due_at, reply_text, created_at)
+                   VALUES (?, ?, ?, ?, ?)""",
+                (account_key, telegram_message_id, due_at, reply_text, time.time()),
             )
             return cursor.rowcount == 1
 
@@ -208,7 +209,7 @@ class DatabaseRequests:
             )
             rows = connection.execute(
                 """SELECT q.id, q.account_key, q.telegram_message_id, q.due_at,
-                          r.message_text
+                          q.reply_text, r.message_text
                    FROM pending_auto_replies q
                    JOIN received_messages r
                      ON r.account_key = q.account_key
@@ -254,11 +255,37 @@ class DatabaseRequests:
         with self.database.connect() as connection:
             rows = connection.execute(
                 """SELECT id, account_key, telegram_message_id, due_at, status,
-                          created_at, processed_at, error
+                          created_at, processed_at, reply_text, error
                    FROM pending_auto_replies
                    WHERE status IN ('queued', 'processing')
                    ORDER BY due_at, id LIMIT ?""",
                 (limit,),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def get_account_timeline(
+        self,
+        account_key: str,
+        *,
+        limit: int = 50,
+    ) -> list[Dict[str, Any]]:
+        with self.database.connect() as connection:
+            rows = connection.execute(
+                """SELECT * FROM (
+                       SELECT 'incoming' AS kind, message_text, received_at AS created_at,
+                              NULL AS due_at, reply_status AS status
+                       FROM received_messages WHERE account_key = ?
+                       UNION ALL
+                       SELECT 'outgoing' AS kind, message_text, created_at,
+                              NULL AS due_at, status
+                       FROM message_deliveries WHERE sender_account = ?
+                       UNION ALL
+                       SELECT 'planned' AS kind, COALESCE(reply_text, '') AS message_text,
+                              created_at, due_at, status
+                       FROM pending_auto_replies
+                       WHERE account_key = ? AND status IN ('queued', 'processing')
+                   ) ORDER BY created_at DESC LIMIT ?""",
+                (account_key, account_key, account_key, limit),
             ).fetchall()
         return [dict(row) for row in rows]
 
