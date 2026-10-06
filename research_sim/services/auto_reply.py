@@ -109,25 +109,42 @@ class AutoReplyRuntime:
         for account_key in accounts - set(self._handlers):
             try:
                 client = await self.sender.connect_session(account_key)
-                peer = await client.get_entity("@" + recipient)
-                central_sender_id = int(peer.id)
 
                 async def handle_message(
                     event: Any,
                     key: str = account_key,
-                    expected_sender_id: int = central_sender_id,
                     allowed_recipient: str = recipient,
                 ) -> None:
+                    if getattr(event, "is_private", True) is not True:
+                        return
+                    try:
+                        sender = await event.get_sender()
+                    except Exception as exc:
+                        LOGGER.warning(
+                            "Could not inspect incoming sender for %s: %s",
+                            key,
+                            exc,
+                        )
+                        return
+                    try:
+                        sender_username = normalize_username(
+                            getattr(sender, "username", "") or ""
+                        )
+                        sender_id = int(sender.id)
+                    except (AttributeError, TypeError, ValueError):
+                        return
+                    if sender_username != allowed_recipient:
+                        return
                     await self._handle_message(
                         key,
-                        expected_sender_id,
+                        sender_id,
                         event,
                         recipient=allowed_recipient,
                     )
 
                 client.add_event_handler(
                     handle_message,
-                    events.NewMessage(incoming=True, from_users=peer),
+                    events.NewMessage(incoming=True),
                 )
                 self._handlers[account_key] = (client, handle_message, recipient)
             except Exception:

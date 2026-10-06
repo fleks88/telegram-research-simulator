@@ -19,9 +19,39 @@ class FakeMessage:
 
 
 class FakeEvent:
-    def __init__(self, message_id: int, sender_id: int, text: str) -> None:
+    def __init__(
+        self,
+        message_id: int,
+        sender_id: int,
+        text: str,
+        *,
+        username: str = "central_user",
+    ) -> None:
         self.message = FakeMessage(message_id, text)
         self.sender_id = sender_id
+        self.is_private = True
+        self._sender = type(
+            "FakeSender",
+            (),
+            {"id": sender_id, "username": username},
+        )()
+
+    async def get_sender(self) -> Any:
+        return self._sender
+
+
+class FakeListenerClient:
+    def __init__(self) -> None:
+        self.callback: Any = None
+        self.event: Any = None
+
+    def add_event_handler(self, callback: Any, event: Any) -> None:
+        self.callback = callback
+        self.event = event
+
+    def remove_event_handler(self, callback: Any) -> None:
+        if self.callback is callback:
+            self.callback = None
 
 
 class FakeMessaging:
@@ -50,6 +80,18 @@ class FakeReplySender:
         typing_seconds: int,
     ) -> None:
         self.prepared.append((account_key, recipient, typing_seconds))
+
+
+class FakeListenerSender(FakeReplySender):
+    def __init__(self) -> None:
+        super().__init__()
+        self.client = FakeListenerClient()
+
+    async def connect_session(self, account_key: str) -> FakeListenerClient:
+        return self.client
+
+    async def disconnect_session(self, account_key: str) -> None:
+        return None
 
 
 class FakeResponder:
@@ -88,6 +130,53 @@ class LearningResponder(FakeResponder):
 
 
 class AutoReplyRuntimeTest(unittest.IsolatedAsyncioTestCase):
+    async def test_listener_filters_incoming_username_without_resolving_entity(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            database = Database(Path(directory) / "listener.sqlite3")
+            database.initialize()
+            requests = DatabaseRequests(database)
+            requests.add_sender_account("personal", "Personal")
+            requests.save_campaign_settings(
+                {
+                    "auto_reply_enabled": True,
+                    "reply_prompt": "Test prompt",
+                    "reply_delay_min_minutes": 0,
+                    "reply_delay_max_minutes": 0,
+                    "recipient": "r_a_f_t",
+                }
+            )
+            settings = Settings(
+                database_path=Path(directory) / "listener.sqlite3",
+                api_token="token",
+                telegram_api_id=123,
+                telegram_api_hash="hash",
+                telegram_session_dir=Path(directory) / "sessions",
+                allowed_recipients=set(),
+                minimum_send_interval_seconds=0,
+                llm_api_key="test-key",
+            )
+            sender = FakeListenerSender()
+            runtime = AutoReplyRuntime(
+                settings,
+                requests,
+                sender,
+                FakeMessaging(),
+                FakeResponder(),
+            )
+
+            await runtime._sync_accounts()
+            self.assertIsNotNone(sender.client.callback)
+            await sender.client.callback(
+                FakeEvent(1, 1001, "ignore me", username="other_user")
+            )
+            await sender.client.callback(
+                FakeEvent(2, 1002, "allowed message", username="R_A_F_T")
+            )
+
+            pending = requests.list_pending_auto_replies()
+            self.assertEqual(len(pending), 1)
+            self.assertEqual(pending[0]["telegram_message_id"], 2)
+
     async def test_session_json_can_supply_per_account_api_credentials(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             session_dir = Path(directory) / "sessions"
