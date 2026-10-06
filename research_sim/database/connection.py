@@ -49,6 +49,7 @@ CREATE TABLE IF NOT EXISTS received_messages (
     account_key TEXT NOT NULL,
     telegram_message_id INTEGER NOT NULL,
     sender_id INTEGER NOT NULL,
+    recipient TEXT NOT NULL DEFAULT '',
     message_text TEXT NOT NULL,
     received_at REAL NOT NULL,
     reply_status TEXT NOT NULL DEFAULT 'pending'
@@ -60,6 +61,7 @@ CREATE TABLE IF NOT EXISTS pending_auto_replies (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     account_key TEXT NOT NULL,
     telegram_message_id INTEGER NOT NULL,
+    recipient TEXT NOT NULL DEFAULT '',
     due_at REAL NOT NULL,
     status TEXT NOT NULL DEFAULT 'queued'
         CHECK (status IN ('queued', 'processing', 'sent', 'failed', 'cancelled')),
@@ -168,6 +170,20 @@ class Database:
             if "unknown_term" not in pending_columns:
                 connection.execute(
                     "ALTER TABLE pending_auto_replies ADD COLUMN unknown_term TEXT"
+                )
+            if "recipient" not in pending_columns:
+                connection.execute(
+                    "ALTER TABLE pending_auto_replies ADD COLUMN recipient TEXT NOT NULL DEFAULT ''"
+                )
+            received_columns = {
+                row["name"]
+                for row in connection.execute(
+                    "PRAGMA table_info(received_messages)"
+                ).fetchall()
+            }
+            if "recipient" not in received_columns:
+                connection.execute(
+                    "ALTER TABLE received_messages ADD COLUMN recipient TEXT NOT NULL DEFAULT ''"
                 )
             connection.execute(
                 """CREATE INDEX IF NOT EXISTS idx_message_delivery_sender_time

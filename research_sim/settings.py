@@ -57,10 +57,6 @@ class Settings:
             for item in os.environ.get("TELEGRAM_ALLOWED_RECIPIENTS", "").split(",")
             if item.strip()
         }
-        if len(recipients) > 1:
-            raise ValueError(
-                "configure exactly one central account in TELEGRAM_ALLOWED_RECIPIENTS"
-            )
         database_path = Path(
             os.environ.get("DATABASE_PATH", "data/telegram-research.sqlite3")
         ).expanduser()

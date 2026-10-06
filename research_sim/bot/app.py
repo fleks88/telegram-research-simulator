@@ -23,6 +23,7 @@ from telegram.ext import (
 )
 
 from .client import ApiClient
+from ..settings import normalize_username
 
 
 LOGGER = logging.getLogger(__name__)
@@ -46,6 +47,8 @@ DIALOGUE_ACCOUNT, DIALOGUE_TASK, DIALOGUE_TARGETS = range(12, 15)
 ) = range(15, 26)
 ACCOUNT_UPLOAD = 26
 ACCOUNT_UPLOAD_NAME = 27
+CAMPAIGN_RECIPIENT = 28
+EDIT_RECIPIENT = 29
 ACCOUNT_KEY_PATTERN = re.compile(r"^[a-zA-Z0-9_-]{1,48}$")
 PACK_SIZES = {8100, 3650, 1800, 660, 325, 60}
 DEFAULT_REPLY_PROMPT = (
@@ -85,6 +88,7 @@ def home_keyboard() -> InlineKeyboardMarkup:
                 InlineKeyboardButton("🎭 Личности", callback_data="flow:persona"),
                 InlineKeyboardButton("🧪 Preview", callback_data="flow:dialogue"),
             ],
+            [InlineKeyboardButton("👥 Получатель / allowlist", callback_data="menu:recipient")],
         ]
     )
 
@@ -439,6 +443,34 @@ async def show_campaign(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         text[:3900],
         reply_markup=InlineKeyboardMarkup([
             [InlineKeyboardButton("⚙️ Изменить шаблоны и prompt", callback_data="flow:campaign")],
+            [InlineKeyboardButton("👥 Изменить получателя", callback_data="flow:recipient")],
+            [InlineKeyboardButton("← Главное меню", callback_data="menu:home")],
+        ]),
+    )
+
+
+async def show_recipient_menu(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+) -> None:
+    try:
+        campaign = await _api(context).get_campaign()
+    except Exception as exc:
+        await _reply(update, f"Не удалось загрузить allowlist: {exc}")
+        return
+    current = f"@{campaign['recipient']}" if campaign else "не настроен"
+    action = (
+        InlineKeyboardButton("✏️ Изменить username", callback_data="flow:recipient")
+        if campaign
+        else InlineKeyboardButton("⚙️ Настроить", callback_data="flow:campaign")
+    )
+    await _reply(
+        update,
+        "👥 Получатель / allowlist\n"
+        f"Сейчас: {current}\n\n"
+        "Система отправляет сообщения и отвечает только этому username.",
+        reply_markup=InlineKeyboardMarkup([
+            [action],
             [InlineKeyboardButton("← Главное меню", callback_data="menu:home")],
         ]),
     )
@@ -515,6 +547,8 @@ async def menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         await show_activation_menu(update, context)
     elif value == "menu:auto_reply":
         await show_auto_reply_menu(update, context)
+    elif value == "menu:recipient":
+        await show_recipient_menu(update, context)
     elif value.startswith("proposals:"):
         await render_dialogue_proposals(update, context, value.split(":", 1)[1])
     elif value.startswith("history:"):
@@ -573,6 +607,7 @@ async def show_auto_reply_menu(update: Update, context: ContextTypes.DEFAULT_TYP
             [InlineKeyboardButton(toggle_label, callback_data=toggle)],
             [InlineKeyboardButton("✏️ Изменить полный промпт", callback_data="flow:reply_prompt")],
             [InlineKeyboardButton("⏱ Изменить задержку", callback_data="flow:reply_delay")],
+            [InlineKeyboardButton("👥 Изменить получателя", callback_data="flow:recipient")],
             [InlineKeyboardButton("← Главное меню", callback_data="menu:home")],
         ]),
     )
@@ -1006,15 +1041,19 @@ async def _deliver_from_bot(
     photo: Optional[bytes] = None,
 ) -> int:
     try:
+        campaign = await _api(context).get_campaign()
+        if not campaign or not campaign.get("recipient"):
+            raise RuntimeError("сначала настройте получателя в allowlist")
+        recipient = campaign["recipient"]
         if photo is None:
             result = await _api(context).send_message(
-                recipient=context.application.bot_data["config"]["recipient"],
+                recipient=recipient,
                 text=context.user_data["send_text"],
                 account_index=context.user_data["send_account_index"],
             )
         else:
             result = await _api(context).send_photo(
-                recipient=context.application.bot_data["config"]["recipient"],
+                recipient=recipient,
                 text=context.user_data["send_text"],
                 account_index=context.user_data["send_account_index"],
                 photo=photo,
@@ -1212,6 +1251,44 @@ async def campaign_setup_start(update: Update, context: ContextTypes.DEFAULT_TYP
     if update.callback_query:
         await update.callback_query.answer()
     context.user_data["campaign_start_date"] = datetime.now(MOSCOW).date().isoformat()
+    current = await _api(context).get_campaign()
+    if current and current.get("recipient"):
+        context.user_data["campaign_recipient"] = current["recipient"]
+        return await _ask_campaign_phrases(update, context)
+    legacy_recipient = context.application.bot_data.get("legacy_recipient")
+    if legacy_recipient:
+        context.user_data["campaign_recipient"] = legacy_recipient
+        return await _ask_campaign_phrases(update, context)
+    await update.effective_message.reply_text(
+        "Введите Telegram username получателя. Система будет писать и отвечать "
+        "только ему, например @partner_user:",
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("Отмена", callback_data="flow:cancel")]
+        ]),
+    )
+    return CAMPAIGN_RECIPIENT
+
+
+async def campaign_recipient_entered(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+) -> int:
+    try:
+        context.user_data["campaign_recipient"] = normalize_username(
+            update.effective_message.text
+        )
+    except ValueError:
+        await update.effective_message.reply_text(
+            "Нужен корректный Telegram username, например @partner_user:"
+        )
+        return CAMPAIGN_RECIPIENT
+    return await _ask_campaign_phrases(update, context)
+
+
+async def _ask_campaign_phrases(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+) -> int:
     await update.effective_message.reply_text(
         "Введите шаблоны сообщений по активациям, по одному на строку (до 100). "
         "Можно использовать {date}, {day}, {slot}, {pack}, {activations}.",
@@ -1220,6 +1297,48 @@ async def campaign_setup_start(update: Update, context: ContextTypes.DEFAULT_TYP
         ]),
     )
     return CAMPAIGN_PHRASES
+
+
+async def edit_recipient_start(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+) -> int:
+    if not _is_authorized(update, context):
+        await _deny(update)
+        return ConversationHandler.END
+    if update.callback_query:
+        await update.callback_query.answer()
+    await update.effective_message.reply_text(
+        "Введите новый Telegram username. После сохранения система будет писать и "
+        "отвечать только ему:",
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("Отмена", callback_data="flow:cancel")]
+        ]),
+    )
+    return EDIT_RECIPIENT
+
+
+async def edit_recipient_entered(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+) -> int:
+    try:
+        recipient = normalize_username(update.effective_message.text)
+        campaign = await _api(context).get_campaign()
+        if not campaign:
+            raise RuntimeError("сначала выполните первоначальную настройку шаблонов")
+        campaign["recipient"] = recipient
+        await _api(context).save_campaign(campaign)
+    except Exception as exc:
+        await update.effective_message.reply_text(
+            f"Не удалось сохранить получателя: {exc}"
+        )
+        return EDIT_RECIPIENT
+    await update.effective_message.reply_text(
+        f"Получатель изменён на @{recipient}. Старые ответы другому username отправлены не будут.",
+        reply_markup=home_keyboard(),
+    )
+    return ConversationHandler.END
 
 
 async def campaign_phrases(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -1273,7 +1392,6 @@ async def _save_message_settings(
     context: ContextTypes.DEFAULT_TYPE,
 ) -> int:
     current = await _api(context).get_campaign() or {}
-    config = context.application.bot_data["config"]
     campaign = {
         "campaign_id": current.get("campaign_id", "activation-messages"),
         "enabled": False,
@@ -1282,7 +1400,8 @@ async def _save_message_settings(
         "reply_delay_min_minutes": int(current.get("reply_delay_min_minutes", 2)),
         "reply_delay_max_minutes": int(current.get("reply_delay_max_minutes", 180)),
         "start_date": current.get("start_date", context.user_data["campaign_start_date"]),
-        "recipient": config["recipient"],
+        "recipient": context.user_data.get("campaign_recipient")
+        or current.get("recipient"),
         "phrases": context.user_data["campaign_phrases"],
         "day_slots": {},
         "activation_enabled": bool(current.get("activation_enabled", False)),
@@ -1687,7 +1806,8 @@ def build_application() -> Application:
     load_dotenv()
     bot_token = os.environ.get("CONTROL_BOT_TOKEN", "").strip()
     api_token = os.environ.get("API_TOKEN", "").strip()
-    recipient = os.environ.get("TELEGRAM_ALLOWED_RECIPIENTS", "").strip().removeprefix("@").casefold()
+    legacy_recipient = os.environ.get("TELEGRAM_ALLOWED_RECIPIENTS", "").split(",")[0]
+    legacy_recipient = legacy_recipient.strip().removeprefix("@").casefold()
     api_url = os.environ.get("API_BASE_URL", "http://127.0.0.1:8000").strip()
     session_dir = os.environ.get(
         "TELEGRAM_SESSION_DIR",
@@ -1697,10 +1817,7 @@ def build_application() -> Application:
         raise ValueError("CONTROL_BOT_TOKEN is required")
     if not api_token:
         raise ValueError("API_TOKEN is required")
-    if not recipient:
-        raise ValueError("TELEGRAM_ALLOWED_RECIPIENTS must contain the central recipient")
     admin_ids = parse_admin_ids(os.environ.get("CONTROL_ADMIN_IDS", ""))
-    config = {"recipient": recipient}
     api_client = ApiClient(api_url, api_token)
     application = (
         Application.builder()
@@ -1711,7 +1828,7 @@ def build_application() -> Application:
     )
     application.bot_data["api"] = api_client
     application.bot_data["admin_ids"] = admin_ids
-    application.bot_data["config"] = config
+    application.bot_data["legacy_recipient"] = legacy_recipient
     application.bot_data["session_dir"] = str(Path(session_dir).expanduser())
 
     conversation = ConversationHandler(
@@ -1730,6 +1847,7 @@ def build_application() -> Application:
             CallbackQueryHandler(edit_reply_prompt_start, pattern=r"^flow:reply_prompt$"),
             CallbackQueryHandler(edit_reply_delay_start, pattern=r"^flow:reply_delay$"),
             CallbackQueryHandler(edit_activation_rules_start, pattern=r"^flow:activation_rules$"),
+            CallbackQueryHandler(edit_recipient_start, pattern=r"^flow:recipient$"),
         ],
         states={
             ADD_ACCOUNT_KEY: [
@@ -1759,6 +1877,9 @@ def build_application() -> Application:
                 MessageHandler(filters.TEXT & ~filters.COMMAND, campaign_prompt),
                 CommandHandler("skip_prompt", campaign_prompt_skip),
                 CallbackQueryHandler(campaign_prompt_choice, pattern=r"^prompt:(default|skip)$"),
+            ],
+            CAMPAIGN_RECIPIENT: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, campaign_recipient_entered)
             ],
             PERSONA_ACCOUNT: [
                 CallbackQueryHandler(
@@ -1790,6 +1911,9 @@ def build_application() -> Application:
             EDIT_REPLY_PROMPT: [MessageHandler(filters.TEXT & ~filters.COMMAND, edit_reply_prompt_entered)],
             EDIT_REPLY_DELAY: [MessageHandler(filters.TEXT & ~filters.COMMAND, edit_reply_delay_entered)],
             EDIT_ACTIVATION_RULES: [MessageHandler(filters.TEXT & ~filters.COMMAND, edit_activation_rules_entered)],
+            EDIT_RECIPIENT: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, edit_recipient_entered)
+            ],
         },
         fallbacks=[
             CommandHandler("cancel", cancel),

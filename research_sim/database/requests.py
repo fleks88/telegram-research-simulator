@@ -234,17 +234,20 @@ class DatabaseRequests:
         telegram_message_id: int,
         sender_id: int,
         message_text: str,
+        recipient: str = "",
     ) -> bool:
         with self.database.connect() as connection:
             cursor = connection.execute(
                 """INSERT OR IGNORE INTO received_messages
-                   (account_key, telegram_message_id, sender_id, message_text, received_at)
-                   VALUES (?, ?, ?, ?, ?)""",
+                   (account_key, telegram_message_id, sender_id, message_text,
+                    recipient, received_at)
+                   VALUES (?, ?, ?, ?, ?, ?)""",
                 (
                     account_key,
                     telegram_message_id,
                     sender_id,
                     message_text,
+                    recipient,
                     time.time(),
                 ),
             )
@@ -271,19 +274,21 @@ class DatabaseRequests:
         due_at: float,
         reply_text: str,
         unknown_term: Optional[str] = None,
+        recipient: str = "",
     ) -> bool:
         with self.database.connect() as connection:
             cursor = connection.execute(
                 """INSERT OR IGNORE INTO pending_auto_replies
                    (account_key, telegram_message_id, due_at, reply_text,
-                    unknown_term, created_at)
-                   VALUES (?, ?, ?, ?, ?, ?)""",
+                    unknown_term, recipient, created_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?)""",
                 (
                     account_key,
                     telegram_message_id,
                     due_at,
                     reply_text,
                     unknown_term,
+                    recipient,
                     time.time(),
                 ),
             )
@@ -306,7 +311,7 @@ class DatabaseRequests:
             )
             rows = connection.execute(
                 """SELECT q.id, q.account_key, q.telegram_message_id, q.due_at,
-                          q.reply_text, q.unknown_term, r.message_text
+                          q.reply_text, q.unknown_term, q.recipient, r.message_text
                    FROM pending_auto_replies q
                    JOIN received_messages r
                      ON r.account_key = q.account_key
@@ -391,19 +396,26 @@ class DatabaseRequests:
         account_key: str,
         *,
         limit: int = 12,
+        recipient: Optional[str] = None,
     ) -> list[Dict[str, Any]]:
         with self.database.connect() as connection:
+            recipient_filter = "" if recipient is None else " AND recipient = ?"
+            parameters: tuple[Any, ...]
+            if recipient is None:
+                parameters = (account_key, account_key, limit)
+            else:
+                parameters = (account_key, recipient, account_key, recipient, limit)
             rows = connection.execute(
-                """SELECT direction, message_text, created_at FROM (
+                f"""SELECT direction, message_text, created_at FROM (
                        SELECT 'incoming' AS direction, message_text,
                               received_at AS created_at
-                       FROM received_messages WHERE account_key = ?
+                       FROM received_messages WHERE account_key = ?{recipient_filter}
                        UNION ALL
                        SELECT 'outgoing' AS direction, message_text, created_at
                        FROM message_deliveries
-                       WHERE sender_account = ? AND status = 'sent'
+                       WHERE sender_account = ? AND status = 'sent'{recipient_filter}
                    ) ORDER BY created_at DESC LIMIT ?""",
-                (account_key, account_key, limit),
+                parameters,
             ).fetchall()
         return [dict(row) for row in reversed(rows)]
 

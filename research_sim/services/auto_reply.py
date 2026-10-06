@@ -11,7 +11,7 @@ from telethon import events
 from ..database.requests import DatabaseRequests
 from ..integrations.telegram import TelethonSender
 from ..services.messaging import MessagingService, SendRateLimitExceeded
-from ..settings import Settings
+from ..settings import Settings, normalize_username
 from .prompt_responder import PromptResponder
 from .personas import PersonaService
 
@@ -42,6 +42,7 @@ class AutoReplyRuntime:
         self._task: asyncio.Task[None] | None = None
         self._central_sender_ids: Dict[str, int] = {}
         self._handlers: Dict[str, Any] = {}
+        self._active_recipient: str | None = None
 
     async def start(self) -> None:
         if self._task is None:
@@ -75,13 +76,16 @@ class AutoReplyRuntime:
         should_listen = bool(
             config.get("auto_reply_enabled")
             and config.get("reply_prompt")
+            and config.get("recipient")
         )
         if not should_listen:
             for account_key in list(self._handlers):
                 await self._remove_account(account_key)
             return
-        if len(self.settings.allowed_recipients) != 1:
-            LOGGER.error("Auto-replies require exactly one allowlisted central recipient")
+        try:
+            recipient = normalize_username(config.get("recipient", ""))
+        except ValueError:
+            LOGGER.error("Auto-replies require a valid bot-configured recipient")
             for account_key in list(self._handlers):
                 await self._remove_account(account_key)
             return
@@ -91,7 +95,10 @@ class AutoReplyRuntime:
                 await self._remove_account(account_key)
             return
 
-        recipient = next(iter(self.settings.allowed_recipients))
+        if self._active_recipient != recipient:
+            for account_key in list(self._handlers):
+                await self._remove_account(account_key)
+            self._active_recipient = recipient
         accounts = {
             account.account_key
             for account in self.requests.list_sender_accounts()
@@ -109,14 +116,20 @@ class AutoReplyRuntime:
                     event: Any,
                     key: str = account_key,
                     expected_sender_id: int = central_sender_id,
+                    allowed_recipient: str = recipient,
                 ) -> None:
-                    await self._handle_message(key, expected_sender_id, event)
+                    await self._handle_message(
+                        key,
+                        expected_sender_id,
+                        event,
+                        recipient=allowed_recipient,
+                    )
 
                 client.add_event_handler(
                     handle_message,
                     events.NewMessage(incoming=True, from_users=peer),
                 )
-                self._handlers[account_key] = (client, handle_message)
+                self._handlers[account_key] = (client, handle_message, recipient)
             except Exception:
                 LOGGER.exception("Could not start auto-reply listener for %s", account_key)
 
@@ -124,7 +137,7 @@ class AutoReplyRuntime:
         registered = self._handlers.pop(account_key, None)
         self._central_sender_ids.pop(account_key, None)
         if registered is not None:
-            client, callback = registered
+            client, callback, _ = registered
             client.remove_event_handler(callback)
         await self.sender.disconnect_session(account_key)
 
@@ -133,6 +146,7 @@ class AutoReplyRuntime:
         account_key: str,
         expected_sender_id: int,
         event: Any,
+        recipient: str | None = None,
     ) -> None:
         if getattr(event, "is_private", True) is not True:
             return
@@ -145,17 +159,25 @@ class AutoReplyRuntime:
             or int(sender_id) != expected_sender_id
         ):
             return
+        record = self.requests.get_campaign_settings()
+        config = record.config if record else {}
+        try:
+            configured_recipient = normalize_username(config.get("recipient", ""))
+        except ValueError:
+            return
+        recipient = recipient or configured_recipient
+        if recipient != configured_recipient:
+            return
         claimed = self.requests.claim_received_message(
             account_key=account_key,
             telegram_message_id=int(message.id),
             sender_id=int(sender_id),
             message_text=message_text,
+            recipient=recipient,
         )
         if not claimed:
             return
 
-        record = self.requests.get_campaign_settings()
-        config = record.config if record else {}
         if not (
             config.get("auto_reply_enabled")
             and config.get("reply_prompt")
@@ -170,7 +192,11 @@ class AutoReplyRuntime:
         minimum = int(config.get("reply_delay_min_minutes", 2))
         maximum = int(config.get("reply_delay_max_minutes", 180))
         delay_seconds = random.randint(minimum * 60, maximum * 60)
-        history = self.requests.get_conversation_context(account_key, limit=12)
+        history = self.requests.get_conversation_context(
+            account_key,
+            limit=12,
+            recipient=recipient,
+        )
         if (
             history
             and history[-1]["direction"] == "incoming"
@@ -282,6 +308,7 @@ class AutoReplyRuntime:
             due_at=time.time() + delay_seconds,
             reply_text=reply,
             unknown_term=unknown_term_to_ask,
+            recipient=recipient,
         )
 
     def _compose_prompt(self, account_key: str, prompt: str) -> str:
@@ -295,6 +322,16 @@ class AutoReplyRuntime:
             config = record.config if record else {}
             if not (config.get("auto_reply_enabled") and config.get("reply_prompt")):
                 self.requests.requeue_auto_reply(row["id"], due_at=(now or time.time()) + 60)
+                continue
+            try:
+                configured_recipient = normalize_username(config.get("recipient", ""))
+            except ValueError:
+                configured_recipient = ""
+            if not row.get("recipient") or row["recipient"] != configured_recipient:
+                self.requests.finish_auto_reply(row["id"], status="cancelled")
+                self.requests.set_received_message_status(
+                    row["account_key"], row["telegram_message_id"], "ignored"
+                )
                 continue
             accounts = self.requests.list_sender_accounts()
             account = next(
@@ -321,10 +358,12 @@ class AutoReplyRuntime:
                         ),
                         row["message_text"],
                         history=self.requests.get_conversation_context(
-                            row["account_key"], limit=12
+                            row["account_key"],
+                            limit=12,
+                            recipient=row["recipient"],
                         ),
                     )
-                recipient = next(iter(self.settings.allowed_recipients))
+                recipient = row["recipient"]
                 await self.sender.mark_read_and_type(
                     row["account_key"],
                     recipient,

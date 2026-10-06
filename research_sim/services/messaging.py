@@ -53,8 +53,15 @@ class MessagingService:
 
     def validate_recipient(self, recipient: str) -> str:
         normalized = normalize_username(recipient)
-        if normalized not in self.settings.allowed_recipients:
-            raise RecipientNotAllowed("recipient is not in TELEGRAM_ALLOWED_RECIPIENTS")
+        campaign = self.requests.get_campaign_settings()
+        configured = (campaign.config.get("recipient") if campaign else "") or ""
+        try:
+            configured = normalize_username(configured) if configured else ""
+        except ValueError:
+            configured = ""
+        allowed = {configured} if configured else self.settings.allowed_recipients
+        if normalized not in allowed:
+            raise RecipientNotAllowed("recipient is not the bot-configured allowlist user")
         return normalized
 
     async def send_message(

@@ -82,7 +82,7 @@ class ApiTest(unittest.TestCase):
         self.assertEqual(replies.status_code, 200)
         self.assertEqual(replies.json(), {"pending": 0, "items": []})
 
-    def test_sender_settings_allow_only_one_central_recipient(self) -> None:
+    def test_legacy_environment_allowlist_accepts_multiple_recipients(self) -> None:
         from unittest.mock import patch
 
         with patch.dict(
@@ -93,8 +93,11 @@ class ApiTest(unittest.TestCase):
             },
             clear=False,
         ):
-            with self.assertRaisesRegex(ValueError, "exactly one central account"):
-                Settings.from_environment()
+            settings = Settings.from_environment()
+            self.assertEqual(
+                settings.allowed_recipients,
+                {"central_one", "central_two"},
+            )
 
     def test_send_api_enforces_allowlist(self) -> None:
         for account_key, label in (("business", "Business"), ("personal", "Personal")):
@@ -135,6 +138,44 @@ class ApiTest(unittest.TestCase):
         )
         self.assertEqual(blocked.status_code, 403)
         self.assertEqual(len(self.sent_messages), 2)
+
+    def test_saved_recipient_replaces_legacy_environment_allowlist(self) -> None:
+        self.client.post(
+            "/api/v1/accounts",
+            headers=self.auth,
+            json={"account_key": "business", "label": "Business"},
+        )
+        settings = {
+            "campaign_id": "activation-messages",
+            "enabled": False,
+            "start_date": "2026-10-06",
+            "recipient": "new_partner",
+            "phrases": ["Pack {pack}: {activations}"],
+            "day_slots": {},
+        }
+        saved = self.client.put(
+            "/api/v1/settings/campaign",
+            headers=self.auth,
+            json=settings,
+        )
+        self.assertEqual(saved.status_code, 200, saved.text)
+
+        legacy = self.client.post(
+            "/api/v1/messages/send",
+            headers=self.auth,
+            json={"recipient": "partner_user", "text": "Must not send", "account_index": 1},
+        )
+        self.assertEqual(legacy.status_code, 403)
+        allowed = self.client.post(
+            "/api/v1/messages/send",
+            headers=self.auth,
+            json={"recipient": "@New_Partner", "text": "Approved", "account_index": 1},
+        )
+        self.assertEqual(allowed.status_code, 200, allowed.text)
+        self.assertEqual(
+            self.sent_messages,
+            [("business", "@new_partner", "Approved", None)],
+        )
 
     def test_photo_send_and_account_history(self) -> None:
         account = self.client.post(

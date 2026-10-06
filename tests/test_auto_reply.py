@@ -175,6 +175,68 @@ class AutoReplyRuntimeTest(unittest.IsolatedAsyncioTestCase):
                 ).fetchone()
             self.assertEqual(row["reply_status"], "replied")
 
+    async def test_queued_reply_is_cancelled_after_recipient_changes(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            database = Database(Path(directory) / "recipient-change.sqlite3")
+            database.initialize()
+            requests = DatabaseRequests(database)
+            requests.add_sender_account("personal", "Personal")
+            requests.save_campaign_settings(
+                {
+                    "auto_reply_enabled": True,
+                    "reply_prompt": "Test prompt",
+                    "reply_delay_min_minutes": 0,
+                    "reply_delay_max_minutes": 0,
+                    "recipient": "old_partner",
+                }
+            )
+            settings = Settings(
+                database_path=Path(directory) / "recipient-change.sqlite3",
+                api_token="token",
+                telegram_api_id=123,
+                telegram_api_hash="hash",
+                telegram_session_dir=Path(directory) / "sessions",
+                allowed_recipients={"legacy_partner"},
+                minimum_send_interval_seconds=0,
+                llm_api_key="test-key",
+            )
+            messaging = FakeMessaging()
+            runtime = AutoReplyRuntime(
+                settings,
+                requests,
+                FakeReplySender(),
+                messaging,
+                FakeResponder(),
+            )
+
+            await runtime._handle_message(
+                "personal",
+                9001,
+                FakeEvent(1, 9001, "hello"),
+                recipient="old_partner",
+            )
+            requests.save_campaign_settings(
+                {
+                    "auto_reply_enabled": True,
+                    "reply_prompt": "Test prompt",
+                    "reply_delay_min_minutes": 0,
+                    "reply_delay_max_minutes": 0,
+                    "recipient": "new_partner",
+                }
+            )
+            await runtime.process_due_replies()
+
+            self.assertEqual(messaging.sent, [])
+            with database.connect() as connection:
+                queued = connection.execute(
+                    "SELECT status FROM pending_auto_replies WHERE telegram_message_id = 1"
+                ).fetchone()
+                received = connection.execute(
+                    "SELECT reply_status FROM received_messages WHERE telegram_message_id = 1"
+                ).fetchone()
+            self.assertEqual(queued["status"], "cancelled")
+            self.assertEqual(received["reply_status"], "ignored")
+
     async def test_unknown_term_is_learned_and_shared_after_question_is_sent(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             database = Database(Path(directory) / "knowledge.sqlite3")

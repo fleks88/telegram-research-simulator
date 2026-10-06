@@ -4,7 +4,7 @@ import string
 from typing import Any, Dict, Optional
 
 from ..database.requests import DatabaseRequests
-from ..settings import Settings
+from ..settings import Settings, normalize_username
 from .messaging import MessagingService
 
 
@@ -27,7 +27,7 @@ class CampaignService:
         return record.config if record is not None else None
 
     def save_settings(self, config: Dict[str, Any]) -> Dict[str, Any]:
-        recipient = self.messaging.validate_recipient(config["recipient"])
+        recipient = normalize_username(config["recipient"])
         config = dict(config)
         config["recipient"] = recipient
         config["enabled"] = False

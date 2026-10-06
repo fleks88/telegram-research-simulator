@@ -68,7 +68,7 @@ class ActivationSyncService:
             return {"status": "disabled"}
         if not self.settings.pack_activation_endpoint:
             return {"status": "endpoint_not_configured"}
-        if len(self.settings.allowed_recipients) != 1:
+        if not config.get("recipient"):
             return {"status": "invalid_recipient_config"}
 
         current_time = now if now is not None else datetime.now(timezone.utc).timestamp()
