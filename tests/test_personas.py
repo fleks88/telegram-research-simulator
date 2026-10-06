@@ -200,60 +200,17 @@ class PersonaResearchTest(unittest.IsolatedAsyncioTestCase):
             self.assertGreaterEqual(sum(result != source for result in results), 70)
             self.assertGreaterEqual(sum("," not in result for result in results), 30)
 
-    def test_payment_notice_reply_avoids_recent_wording(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            database = Database(Path(directory) / "payments.sqlite3")
-            database.initialize()
-            requests = DatabaseRequests(database)
-            requests.add_sender_account("buyer", "Buyer")
-            personas = PersonaService(requests)
-            notice = (
-                "Платеж · СБП Сумма: 8,000 ₽ "
-                "Заявка: Q8HNFSLCW08W Нажмите кнопку для оплаты"
-            )
-            first = personas.payment_notice_reply(
-                "buyer",
-                notice,
-                history=[],
-                seed="first",
-            )
-            second = personas.payment_notice_reply(
-                "buyer",
-                notice,
-                history=[
-                    {
-                        "direction": "outgoing",
-                        "message_text": first,
-                    }
-                ],
-                seed="second",
-            )
-            self.assertIsNotNone(first)
-            self.assertIsNotNone(second)
-            self.assertNotEqual(first, second)
-            self.assertIsNone(
-                personas.payment_notice_reply(
-                    "buyer",
-                    "Сколько стоит 8100 UC?",
-                    history=[],
-                    seed="not-payment",
-                )
-            )
-            generated = [
-                personas.payment_notice_reply(
-                    "buyer",
-                    notice,
-                    history=[],
-                    seed=f"distribution:{index}",
-                )
-                for index in range(1000)
-            ]
-            question_count = sum(reply.endswith("?") for reply in generated)
-            self.assertGreaterEqual(question_count, 250)
-            self.assertLessEqual(question_count, 350)
-            self.assertTrue(
-                all("это норм" not in reply.casefold() for reply in generated)
-            )
+    def test_payment_notice_provides_generation_guidance_instead_of_a_reply(self) -> None:
+        instruction = PersonaService.payment_notice_instruction(
+            "Платеж · СБП Сумма: 8,000 ₽ Заявка: Q8HNFSLCW08W"
+        )
+        self.assertIsNotNone(instruction)
+        self.assertIn("по всей текущей персоне", instruction)
+        self.assertIn("Это только примеры", instruction)
+        self.assertIn("не выбирай из них", instruction)
+        self.assertIsNone(
+            PersonaService.payment_notice_instruction("Сколько стоит 8100 UC?")
+        )
 
     def test_canned_followup_question_is_removed(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -275,33 +232,24 @@ class PersonaResearchTest(unittest.IsolatedAsyncioTestCase):
                 seed="buyer-role",
             )
             self.assertNotIn("попробуй", corrected_role.casefold())
-            variants = {
+            self.assertEqual(
+                corrected_role.casefold(),
+                "не проходит платеж, можно мне попробовать другой способ",
+            )
+            self.assertEqual(
                 personas.enforce_buyer_voice(
-                    "Не проходит платеж, попробуй другой способ",
-                    seed=f"variant:{index}",
-                )
-                for index in range(100)
-            }
-            self.assertGreaterEqual(len(variants), 6)
-            self.assertTrue(
-                all("попробуй" not in variant.casefold() for variant in variants)
+                    "Оплати через карту, СБП сейчас не работает",
+                    seed="preserve-payment-context",
+                ),
+                "Можно мне оплатить через карту, СБП сейчас не работает",
             )
 
-    def test_compact_payment_notice_uses_buyer_voice(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            database = Database(Path(directory) / "compact-payment.sqlite3")
-            database.initialize()
-            requests = DatabaseRequests(database)
-            requests.add_sender_account("buyer", "Buyer")
-            personas = PersonaService(requests)
-            reply = personas.payment_notice_reply(
-                "buyer",
-                "🧾 СБП 8000 ₽ — нажмите для оплаты",
-                history=[],
-                seed="compact-notice",
+    def test_compact_payment_notice_gets_generation_guidance(self) -> None:
+        self.assertIsNotNone(
+            PersonaService.payment_notice_instruction(
+                "🧾 СБП 8000 ₽ — нажмите для оплаты"
             )
-            self.assertIsNotNone(reply)
-            self.assertNotIn("попробуй", reply.casefold())
+        )
 
     def test_export_aggregates_and_random_profile_are_stored(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

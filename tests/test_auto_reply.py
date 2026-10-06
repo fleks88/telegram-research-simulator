@@ -177,6 +177,78 @@ class AutoReplyRuntimeTest(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(len(pending), 1)
             self.assertEqual(pending[0]["telegram_message_id"], 2)
 
+    async def test_payment_notice_is_generated_with_persona_and_history(self) -> None:
+        class PaymentResponder:
+            def __init__(self) -> None:
+                self.prompt = ""
+                self.history = []
+
+            async def create_reply_analysis(self, prompt, incoming_text, *, history):
+                self.prompt = prompt
+                self.history = history
+                return {
+                    "reply": "Опять отклонили, пришлите ссылку для карты",
+                    "unknown_term": None,
+                }
+
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "payment.sqlite3"
+            database = Database(path)
+            database.initialize()
+            requests = DatabaseRequests(database)
+            requests.add_sender_account("buyer", "Buyer")
+            requests.save_sender_persona("buyer", {
+                "profile_version": 4,
+                "identity_prompt": "Нетерпеливый покупатель, говорит сухо",
+                "address_style": "вы",
+                "word_accuracy_percent": 100,
+                "punctuation_accuracy_percent": 100,
+                "terminal_period_percent": 0,
+                "lowercase_start_percent": 0,
+            })
+            requests.save_campaign_settings({
+                "auto_reply_enabled": True,
+                "reply_prompt": "Тест покупки UC",
+                "reply_delay_min_minutes": 0,
+                "reply_delay_max_minutes": 0,
+                "recipient": "central_user",
+            })
+            settings = Settings(
+                database_path=path,
+                api_token="token",
+                telegram_api_id=123,
+                telegram_api_hash="hash",
+                telegram_session_dir=Path(directory) / "sessions",
+                allowed_recipients={"central_user"},
+                minimum_send_interval_seconds=0,
+                llm_api_key="test-key",
+            )
+            responder = PaymentResponder()
+            messaging = FakeMessaging()
+            runtime = AutoReplyRuntime(
+                settings, requests, FakeReplySender(), messaging, responder,
+            )
+            await runtime._handle_message(
+                "buyer", 9001, FakeEvent(1, 9001, "Есть оплата картой"),
+            )
+            await runtime.process_due_replies()
+            await runtime._handle_message(
+                "buyer", 9001,
+                FakeEvent(2, 9001, "🧾 СБП 8000 ₽ — нажмите для оплаты"),
+            )
+            await runtime.process_due_replies()
+            self.assertIn("Нетерпеливый покупатель", responder.prompt)
+            self.assertIn("только на «вы»", responder.prompt)
+            self.assertIn("Это только примеры", responder.prompt)
+            self.assertTrue(any(
+                row["message_text"] == "Есть оплата картой"
+                for row in responder.history
+            ))
+            self.assertEqual(
+                messaging.sent[-1][1],
+                "Опять отклонили, пришлите ссылку для карты",
+            )
+
     async def test_session_json_can_supply_per_account_api_credentials(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             session_dir = Path(directory) / "sessions"
@@ -367,6 +439,7 @@ class AutoReplyRuntimeTest(unittest.IsolatedAsyncioTestCase):
             )
             self.assertIsNone(requests.get_pending_term_question("acc1"))
             await runtime.process_due_replies()
+            self.assertEqual(messaging.sent[-1][1], "что такое фробус?")
             self.assertEqual(
                 requests.get_pending_term_question("acc1")["display_term"],
                 "фробус",

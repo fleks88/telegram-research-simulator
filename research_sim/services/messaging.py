@@ -6,6 +6,7 @@ from typing import Optional
 from ..database.requests import DatabaseRequests
 from ..integrations.telegram import TelethonSender
 from ..settings import Settings, normalize_username
+from .conversation_prompts import compose_prompt
 from .personas import PersonaService
 from .prompt_responder import PromptResponder
 
@@ -120,13 +121,19 @@ class MessagingService:
             if campaign_id is not None or apply_persona:
                 persona = self.personas.get(sender_account.account_key)
                 if self.prompt_responder is not None and self.settings.llm_api_key:
+                    campaign = self.requests.get_campaign_settings()
                     message = await self.prompt_responder.rewrite_for_persona(
-                        identity_prompt=self.personas.prompt_fragment(
-                            sender_account.account_key
+                        identity_prompt=compose_prompt(
+                            campaign.config.get("reply_prompt") if campaign else None,
+                            self.personas.prompt_fragment(sender_account.account_key),
+                            mode="activation",
                         ),
                         text=message,
                         word_accuracy_percent=persona["word_accuracy_percent"],
                         punctuation_accuracy_percent=persona["punctuation_accuracy_percent"],
+                        history=self.requests.get_conversation_context(
+                            sender_account.account_key, limit=12, recipient=normalized_recipient,
+                        ),
                     )
                 message = self.personas.stylize_scheduled_text(
                     sender_account.account_key,

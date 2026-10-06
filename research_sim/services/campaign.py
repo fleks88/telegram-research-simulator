@@ -6,6 +6,7 @@ from typing import Any, Dict, Optional
 from ..database.requests import DatabaseRequests
 from ..settings import Settings, normalize_username
 from .messaging import MessagingService
+from .conversation_prompts import shared_prompt
 
 
 SUPPORTED_PACK_SIZES = {8100, 3650, 1800, 660, 325, 60}
@@ -24,7 +25,9 @@ class CampaignService:
 
     def get_settings(self) -> Optional[Dict[str, Any]]:
         record = self.requests.get_campaign_settings()
-        return record.config if record is not None else None
+        if record is None:
+            return None
+        return {**record.config, "reply_prompt": shared_prompt(record.config.get("reply_prompt"))}
 
     def save_settings(self, config: Dict[str, Any]) -> Dict[str, Any]:
         recipient = normalize_username(config["recipient"])
@@ -49,7 +52,7 @@ class CampaignService:
                     "templates support only {date}, {day}, {slot}, {pack}, and {activations}"
                 )
         config.setdefault("auto_reply_enabled", False)
-        config.setdefault("reply_prompt", None)
+        config["reply_prompt"] = shared_prompt(config.get("reply_prompt"))
         config.setdefault("reply_delay_min_minutes", 2)
         config.setdefault("reply_delay_max_minutes", 180)
         config.setdefault("activation_enabled", False)
@@ -68,8 +71,6 @@ class CampaignService:
                 raise ValueError("activation multiplier must be between 1 and 1000000")
         if config["activation_enabled"] and not config["activation_rules"]:
             raise ValueError("activation_rules are required when activation sending is enabled")
-        if config["auto_reply_enabled"] and not (config["reply_prompt"] or "").strip():
-            raise ValueError("reply_prompt is required when automatic replies are enabled")
         if config["reply_prompt"] is not None and len(config["reply_prompt"]) > 4000:
             raise ValueError("reply_prompt must be 4000 characters or fewer")
         if not (

@@ -228,6 +228,7 @@ class PromptResponder:
         text: str,
         word_accuracy_percent: int,
         punctuation_accuracy_percent: int,
+        history: Optional[List[Dict[str, Any]]] = None,
     ) -> str:
         if not self.settings.llm_api_key:
             raise RuntimeError(
@@ -236,14 +237,15 @@ class PromptResponder:
         instruction = (
             "Rewrite one short message for a closed research test. Preserve its intent "
             "and factual content. Apply the described sender voice. Do not add claims "
-            "or explain the rewrite. Return only the rewritten message."
+            "or explain the rewrite. Use conversation_history to continue the dialogue "
+            "without repeating settled questions. Return only the rewritten message."
         )
         user_content = json.dumps(
             {
-                "sender_identity": identity_prompt,
                 "word_accuracy_percent": word_accuracy_percent,
                 "punctuation_accuracy_percent": punctuation_accuracy_percent,
                 "draft": text,
+                "conversation_history": history or [],
             },
             ensure_ascii=False,
         )
@@ -254,7 +256,7 @@ class PromptResponder:
                 json={
                     "model": self.settings.llm_model,
                     "messages": [
-                        {"role": "system", "content": instruction},
+                        {"role": "system", "content": instruction + "\n\n" + identity_prompt},
                         {"role": "user", "content": user_content},
                     ],
                     "temperature": 0.5,

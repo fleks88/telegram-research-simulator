@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Any, Dict, List
 
 from ..database.requests import DatabaseRequests
+from .conversation_prompts import compose_prompt, shared_prompt
 from .personas import PersonaService
 from .prompt_responder import PromptResponder
 
@@ -84,18 +85,15 @@ class PersonaResearchService:
         if not message:
             raise ValueError("incoming_text must not be empty")
         campaign = self.requests.get_campaign_settings()
-        reply_prompt = (campaign.config.get("reply_prompt") if campaign else None) or ""
-        if not reply_prompt.strip():
-            raise ValueError("configure the default reply prompt first")
-        effective_prompt = (
-            reply_prompt.strip()
-            + "\n\n"
-            + self.personas.prompt_fragment(account_key)
-            + "\n\n"
-            + self.personas.reply_mode_instruction(
-                seed=f"preview-mode:{account_key}:{message}"
-            )
+        reply_prompt = shared_prompt(campaign.config.get("reply_prompt") if campaign else None)
+        effective_prompt = compose_prompt(
+            reply_prompt, self.personas.prompt_fragment(account_key), mode="auto_reply"
+        ) + "\n\n" + self.personas.reply_mode_instruction(
+            seed=f"preview-mode:{account_key}:{message}"
         )
+        payment_instruction = self.personas.payment_notice_instruction(message)
+        if payment_instruction:
+            effective_prompt += "\n\n" + payment_instruction
         reply = await self.responder.create_reply(
             effective_prompt,
             message,

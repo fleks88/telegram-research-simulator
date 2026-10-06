@@ -3,7 +3,6 @@ from __future__ import annotations
 import random
 import re
 import secrets
-from difflib import SequenceMatcher
 from pathlib import Path
 from typing import Any, Dict
 
@@ -256,6 +255,10 @@ class PersonaService:
                 "- Ты покупатель: не инструктируй продавца фразами «попробуй другой "
                 "способ», «оплати иначе» или похожими. Описывай только свою проблему "
                 "либо проси продавца дать другую ссылку или способ",
+                "- Каждый раз формулируй ответ самостоятельно по всей персоне и "
+                "истории диалога. Примеры в контексте показывают только смысл: "
+                "не выбирай ответ из них и не копируй их дословно",
+                "- Избегай повторения своих недавних формулировок",
                 "- Верни одну короткую естественную реплику без пояснений",
             ]
         )
@@ -402,34 +405,29 @@ class PersonaService:
         )
         if not needs_correction:
             return text
-        candidates = [
-            "У меня платеж не проходит",
-            "Банк у меня оплату не пропускает",
-            "У меня банк платеж отклоняет",
-            "Не могу оплатить",
-            "СБП у меня не проходит",
-            "Оплата у меня блокируется",
-            "У меня с оплатой не выходит",
-            "Банк не дает мне оплатить",
-        ]
+        # Keep the generated wording and context rather than replacing the whole
+        # reply with a randomly selected canned payment complaint.
+        replacements = {
+            "попробуй": "можно мне попробовать",
+            "попробуйте": "можно мне попробовать",
+            "оплати": "можно мне оплатить",
+            "оплатите": "можно мне оплатить",
+            "проверь": "можно проверить",
+            "проверьте": "можно проверить",
+        }
 
-        def normalize(value: str) -> str:
-            return re.sub(r"[^a-zа-яё0-9]+", " ", value.casefold()).strip()
+        def as_buyer(match: re.Match[str]) -> str:
+            replacement = replacements[match.group().casefold()]
+            if match.group()[0].isupper():
+                replacement = replacement[0].upper() + replacement[1:]
+            return replacement
 
-        recent = [
-            normalize(row["message_text"])
-            for row in history or []
-            if row.get("direction") == "outgoing" and row.get("message_text")
-        ][-8:]
-        fresh = [
-            candidate
-            for candidate in candidates
-            if all(
-                SequenceMatcher(None, normalize(candidate), previous).ratio() < 0.68
-                for previous in recent
-            )
-        ]
-        return random.Random(seed + ":buyer-voice").choice(fresh or candidates)
+        return re.sub(
+            r"\b(?:попробуй(?:те)?|оплати(?:те)?|проверь(?:те)?)\b",
+            as_buyer,
+            text,
+            flags=re.I,
+        )
 
     @staticmethod
     def reply_mode_instruction(*, seed: str) -> str:
@@ -445,36 +443,8 @@ class PersonaService:
             "«так и должно быть?»."
         )
 
-    def clarification_question(
-        self,
-        account_key: str,
-        term: str,
-        *,
-        seed: str,
-    ) -> str:
-        profile = self.get(account_key)
-        if profile["address_style"] == "вы":
-            variants = [
-                f"а что значит «{term}»?",
-                f"подскажите, что такое «{term}»?",
-                f"не понял, что вы имеете в виду под «{term}»?",
-            ]
-        else:
-            variants = [
-                f"а что значит «{term}»?",
-                f"подскажи, что такое «{term}»?",
-                f"не понял, что ты имеешь в виду под «{term}»?",
-            ]
-        return random.Random(seed + ":term-question").choice(variants)
-
-    def payment_notice_reply(
-        self,
-        account_key: str,
-        incoming_text: str,
-        *,
-        history: list[Dict[str, Any]],
-        seed: str,
-    ) -> str | None:
+    @staticmethod
+    def payment_notice_instruction(incoming_text: str) -> str | None:
         lowered = incoming_text.casefold()
         is_notice = (
             all(marker in lowered for marker in PAYMENT_NOTICE_MARKERS)
@@ -485,69 +455,15 @@ class PersonaService:
         )
         if not is_notice:
             return None
-
-        profile = self.get(account_key)
-        polite = profile["address_style"] == "вы"
-        direct_candidates = [
-            "Банк оплату отклоняет",
-            "У меня оплата не проходит",
-            "Что-то банк не дает оплатить",
-            "Почему-то платеж блокируется",
-            "Не могу оплатить банк отклоняет",
-            "Банк ругается на платеж",
-            "СБП не проходит почему-то",
-            "Мне банк не дает это оплатить",
-            "Чет с оплатой не выходит банк блокает",
-        ]
-        question_candidates = [
-            "У меня оплата не проходит, можно как-то иначе?",
-            "Что-то банк не дает оплатить, что делать?",
-            "Оплата не проходит, другую ссылку можно?",
-            "Платеж отклоняется, можно другим способом?",
-            "Не дает оплатить, ссылка точно рабочая?",
-        ]
-        if polite:
-            question_candidates.extend(
-                [
-                    "Подскажите, почему банк отклоняет оплату?",
-                    "Можете другую ссылку дать? Эта не проходит",
-                ]
-            )
-        else:
-            question_candidates.extend(
-                [
-                    "Подскажи че банк оплату не пропускает?",
-                    "Можешь другую ссылку дать? Эта не проходит",
-                ]
-            )
-        if profile["aggression_level"] >= 4:
-            direct_candidates.append("Банк опять блокает оплату")
-            question_candidates.append("Другой способ оплаты есть?")
-        if any(marker in lowered for marker in ("мошенн", "подозр", "fraud")):
-            direct_candidates.extend(
-                ["Банк пишет что платеж подозрительный", "Банк предупреждает про мошенничество"]
-            )
-            question_candidates.append("Тут предупреждение про мошенников, что делать?")
-
-        def normalize(value: str) -> str:
-            return re.sub(r"[^a-zа-яё0-9]+", " ", value.casefold()).strip()
-
-        recent = [
-            normalize(row["message_text"])
-            for row in history
-            if row.get("direction") == "outgoing" and row.get("message_text")
-        ][-8:]
-        rng = random.Random(seed + ":payment-notice")
-        candidates = (
-            direct_candidates if rng.randrange(100) < 70 else question_candidates
+        return (
+            "Это платёжное уведомление. В этом тестовом сценарии ты покупатель, "
+            "у которого не получается оплатить. Сформулируй свою реакцию заново "
+            "по всей текущей персоне и истории диалога: учитывай характер, "
+            "дружелюбность, резкость, юмор, инициативность, длину и обращение. "
+            "Соблюдай выбранный режим ответа. "
+            "Примеры смысла: «У меня платеж не проходит», «Банк оплату отклоняет», "
+            "«Можно другой способ оплаты?». Это только примеры, а не список "
+            "допустимых ответов: не выбирай из них и не копируй их дословно. "
+            "Не повторяй формулировки своих недавних сообщений. Не придумывай "
+            "предупреждение о мошенничестве, если его нет в сообщении или истории."
         )
-        fresh = [
-            candidate
-            for candidate in candidates
-            if all(
-                SequenceMatcher(None, normalize(candidate), previous).ratio() < 0.68
-                for previous in recent
-            )
-        ]
-        pool = fresh or candidates
-        return rng.choice(pool)

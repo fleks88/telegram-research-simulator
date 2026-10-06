@@ -452,7 +452,7 @@ class ApiTest(unittest.TestCase):
         self.assertEqual(tick.status_code, 404)
         self.assertEqual(self.sent_messages, [])
 
-    def test_campaign_requires_prompt_for_auto_reply_and_valid_templates(self) -> None:
+    def test_campaign_defaults_prompt_and_validates_templates(self) -> None:
         base_payload = {
             "campaign_id": "prompt-validation",
             "enabled": False,
@@ -467,7 +467,11 @@ class ApiTest(unittest.TestCase):
             headers=self.auth,
             json=missing_prompt,
         )
-        self.assertEqual(response.status_code, 422)
+        self.assertEqual(response.status_code, 200)
+        from research_sim.services.conversation_prompts import DEFAULT_REPLY_PROMPT
+        self.assertEqual(response.json()["reply_prompt"], DEFAULT_REPLY_PROMPT)
+        loaded = self.client.get("/api/v1/settings/campaign", headers=self.auth)
+        self.assertEqual(loaded.json()["reply_prompt"], DEFAULT_REPLY_PROMPT)
 
         invalid_template = dict(base_payload, phrases=["Test {unknown}"])
         response = self.client.put(

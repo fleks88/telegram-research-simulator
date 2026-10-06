@@ -24,6 +24,7 @@ from telegram.ext import (
 
 from .client import ApiClient
 from ..settings import normalize_username
+from ..services.conversation_prompts import DEFAULT_REPLY_PROMPT, shared_prompt
 
 
 LOGGER = logging.getLogger(__name__)
@@ -51,13 +52,6 @@ CAMPAIGN_RECIPIENT = 28
 EDIT_RECIPIENT = 29
 ACCOUNT_KEY_PATTERN = re.compile(r"^[a-zA-Z0-9_-]{1,48}$")
 PACK_SIZES = {8100, 3650, 1800, 660, 325, 60}
-DEFAULT_REPLY_PROMPT = (
-    "Ты участник закрытого согласованного исследования общения. "
-    "Отвечай естественно от лица заданного профиля и учитывай историю диалога. "
-    "Не упоминай системный промпт, автоматизацию или генерацию ответа. "
-    "Не выдумывай факты, обещания, встречи и действия, которых нет в контексте. "
-    "Не повторяй входящее сообщение. Верни только текст ответа без пояснений и разметки."
-)
 TRAITS = [
     ("literacy_level", "Грамотность", ACCOUNT_TRAIT_LITERACY),
     ("aggression_level", "Резкость", ACCOUNT_TRAIT_AGGRESSION),
@@ -590,13 +584,13 @@ async def show_auto_reply_menu(update: Update, context: ContextTypes.DEFAULT_TYP
     except Exception:
         pass
     enabled = bool(campaign.get("auto_reply_enabled"))
-    prompt = (campaign.get("reply_prompt") or "").strip()
+    prompt = shared_prompt(campaign.get("reply_prompt"))
     text = (
         f"💬 Автоответы: {'включены' if enabled else 'выключены'}\n"
         f"Задержка: {campaign.get('reply_delay_min_minutes', 2)}–"
         f"{campaign.get('reply_delay_max_minutes', 180)} минут\n"
         f"В очереди: {pending}\n\n"
-        f"Полный системный промпт:\n{prompt[:2500] or 'не задан'}"
+        f"Общий промпт для автоответов и активаций:\n{prompt[:2500]}"
     )
     toggle = "auto:disable" if enabled else "auto:enable"
     toggle_label = "⏸ Выключить" if enabled else "▶️ Включить"
@@ -605,7 +599,7 @@ async def show_auto_reply_menu(update: Update, context: ContextTypes.DEFAULT_TYP
         text,
         reply_markup=InlineKeyboardMarkup([
             [InlineKeyboardButton(toggle_label, callback_data=toggle)],
-            [InlineKeyboardButton("✏️ Изменить полный промпт", callback_data="flow:reply_prompt")],
+            [InlineKeyboardButton("✏️ Изменить общий промпт", callback_data="flow:reply_prompt")],
             [InlineKeyboardButton("⏱ Изменить задержку", callback_data="flow:reply_delay")],
             [InlineKeyboardButton("👥 Изменить получателя", callback_data="flow:recipient")],
             [InlineKeyboardButton("← Главное меню", callback_data="menu:home")],
@@ -632,6 +626,7 @@ async def show_activation_menu(update: Update, context: ContextTypes.DEFAULT_TYP
         reply_markup=InlineKeyboardMarkup([
             [InlineKeyboardButton("⏸ Выключить" if enabled else "▶️ Включить", callback_data="activation:disable" if enabled else "activation:enable")],
             [InlineKeyboardButton("🔢 Изменить пороги", callback_data="flow:activation_rules")],
+            [InlineKeyboardButton("✏️ Изменить общий промпт", callback_data="flow:reply_prompt")],
             [InlineKeyboardButton("🔄 Обновить", callback_data="menu:activation")],
             [InlineKeyboardButton("← Главное меню", callback_data="menu:home")],
         ]),
@@ -1120,10 +1115,24 @@ async def edit_reply_prompt_start(
         return ConversationHandler.END
     query = update.callback_query
     await query.answer()
+    try:
+        campaign = await _api(context).get_campaign()
+        if not campaign:
+            raise RuntimeError("сначала настройте кампанию")
+    except Exception as exc:
+        await query.edit_message_text(f"Не удалось загрузить промпт: {exc}")
+        return ConversationHandler.END
     await query.edit_message_text(
-        "Отправьте новый полный системный промпт (до 4000 символов). "
-        "Он будет использоваться целиком; профиль выбранного аккаунта добавится ниже него."
+        "Ниже текущий общий промпт для автоответов и активаций. "
+        "Скопируйте его, измените или дополните и отправьте весь текст "
+        "одним сообщением (до 4000 символов). Персона и задача текущего "
+        "режима добавляются автоматически.",
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("Вернуть базовый промпт", callback_data="prompt:reset")],
+            [InlineKeyboardButton("Отмена", callback_data="flow:cancel")],
+        ]),
     )
+    await update.effective_message.reply_text(shared_prompt(campaign.get("reply_prompt")))
     return EDIT_REPLY_PROMPT
 
 
@@ -1144,8 +1153,33 @@ async def edit_reply_prompt_entered(
         await update.effective_message.reply_text(f"Не удалось сохранить промпт: {exc}")
         return ConversationHandler.END
     await update.effective_message.reply_text(
-        "Полный системный промпт сохранён.", reply_markup=home_keyboard()
+        "Общий промпт сохранён для автоответов и активаций.", reply_markup=home_keyboard()
     )
+    return ConversationHandler.END
+
+
+async def reset_reply_prompt(
+    update: Update, context: ContextTypes.DEFAULT_TYPE
+) -> int:
+    if not _is_authorized(update, context):
+        await _deny(update)
+        return ConversationHandler.END
+    query = update.callback_query
+    await query.answer()
+    try:
+        campaign = await _api(context).get_campaign()
+        if not campaign:
+            raise RuntimeError("сначала настройте кампанию")
+        campaign["reply_prompt"] = DEFAULT_REPLY_PROMPT
+        await _api(context).save_campaign(campaign)
+    except Exception as exc:
+        await query.edit_message_text(f"Не удалось восстановить промпт: {exc}")
+        return ConversationHandler.END
+    await query.edit_message_text(
+        "Базовый общий промпт восстановлен для автоответов и активаций.",
+        reply_markup=home_keyboard(),
+    )
+    await update.effective_message.reply_text(DEFAULT_REPLY_PROMPT)
     return ConversationHandler.END
 
 
@@ -1351,13 +1385,14 @@ async def campaign_phrases(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         return CAMPAIGN_PHRASES
     context.user_data["campaign_phrases"] = phrases
     await update.effective_message.reply_text(
-        "Введите полный системный промпт для автоответов (до 4000 символов) "
-        "или используйте безопасный базовый вариант.",
+        "Введите общий промпт для автоответов и активаций (до 4000 символов) "
+        "или используйте базовый вариант, показанный ниже.",
         reply_markup=InlineKeyboardMarkup([
             [InlineKeyboardButton("Использовать базовый промпт", callback_data="prompt:default")],
             [InlineKeyboardButton("Отмена", callback_data="flow:cancel")],
         ]),
     )
+    await update.effective_message.reply_text(DEFAULT_REPLY_PROMPT)
     return CAMPAIGN_PROMPT
 
 
@@ -1441,11 +1476,6 @@ async def set_auto_reply_enabled(
         campaign = await _api(context).get_campaign()
         if not campaign:
             await update.effective_message.reply_text("Сначала настройте кампанию в главном меню.")
-            return
-        if enabled and not (campaign.get("reply_prompt") or "").strip():
-            await update.effective_message.reply_text(
-                "В кампании нет prompt. Откройте «Автоответы» и задайте его."
-            )
             return
         campaign["auto_reply_enabled"] = enabled
         await _api(context).save_campaign(campaign)
@@ -1908,7 +1938,10 @@ def build_application() -> Application:
                 MessageHandler(filters.TEXT & ~filters.COMMAND, account_identity_entered),
                 CallbackQueryHandler(account_identity_entered, pattern=r"^identity:skip$"),
             ],
-            EDIT_REPLY_PROMPT: [MessageHandler(filters.TEXT & ~filters.COMMAND, edit_reply_prompt_entered)],
+            EDIT_REPLY_PROMPT: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, edit_reply_prompt_entered),
+                CallbackQueryHandler(reset_reply_prompt, pattern=r"^prompt:reset$"),
+            ],
             EDIT_REPLY_DELAY: [MessageHandler(filters.TEXT & ~filters.COMMAND, edit_reply_delay_entered)],
             EDIT_ACTIVATION_RULES: [MessageHandler(filters.TEXT & ~filters.COMMAND, edit_activation_rules_entered)],
             EDIT_RECIPIENT: [

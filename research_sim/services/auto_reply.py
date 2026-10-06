@@ -13,6 +13,7 @@ from ..integrations.telegram import TelethonSender
 from ..services.messaging import MessagingService, SendRateLimitExceeded
 from ..settings import Settings, normalize_username
 from .prompt_responder import PromptResponder
+from .conversation_prompts import compose_prompt
 from .personas import PersonaService
 
 
@@ -75,7 +76,6 @@ class AutoReplyRuntime:
         config = campaign_record.config if campaign_record else {}
         should_listen = bool(
             config.get("auto_reply_enabled")
-            and config.get("reply_prompt")
             and config.get("recipient")
         )
         if not should_listen:
@@ -197,7 +197,6 @@ class AutoReplyRuntime:
 
         if not (
             config.get("auto_reply_enabled")
-            and config.get("reply_prompt")
         ):
             self.requests.set_received_message_status(
                 account_key,
@@ -244,20 +243,15 @@ class AutoReplyRuntime:
                     self.requests.clear_pending_term_question(account_key)
                     pending_term = None
 
-            payment_reply = self.personas.payment_notice_reply(
-                account_key,
-                message_text,
-                history=history,
-                seed=f"payment:{account_key}:{message.id}",
-            )
-            prompt = self._compose_prompt(account_key, config["reply_prompt"])
+            prompt = self._compose_prompt(account_key, config.get("reply_prompt"))
+            payment_instruction = self.personas.payment_notice_instruction(message_text)
+            if payment_instruction:
+                prompt += "\n\n" + payment_instruction
             prompt += "\n\n" + self.personas.reply_mode_instruction(
                 seed=f"reply-mode:{account_key}:{message.id}"
             )
             analyzer = getattr(self.responder, "create_reply_analysis", None)
-            if payment_reply is not None:
-                reply = payment_reply
-            elif callable(analyzer):
+            if callable(analyzer):
                 analysis = await analyzer(
                     prompt,
                     message_text,
@@ -283,11 +277,6 @@ class AutoReplyRuntime:
                         )
                         if normalized is not None:
                             unknown_term_to_ask = normalized[1]
-                            reply = self.personas.clarification_question(
-                                account_key,
-                                unknown_term_to_ask,
-                                seed=f"term:{account_key}:{message.id}",
-                            )
             else:
                 reply = await self.responder.create_reply(
                     prompt,
@@ -328,8 +317,10 @@ class AutoReplyRuntime:
             recipient=recipient,
         )
 
-    def _compose_prompt(self, account_key: str, prompt: str) -> str:
-        return prompt.strip() + "\n\n" + self.personas.prompt_fragment(account_key)
+    def _compose_prompt(self, account_key: str, prompt: str | None) -> str:
+        return compose_prompt(
+            prompt, self.personas.prompt_fragment(account_key), mode="auto_reply"
+        )
 
     async def process_due_replies(self, *, now: float | None = None) -> int:
         rows = self.requests.claim_due_auto_replies(now=now, limit=10)
@@ -337,7 +328,7 @@ class AutoReplyRuntime:
         for row in rows:
             record = self.requests.get_campaign_settings()
             config = record.config if record else {}
-            if not (config.get("auto_reply_enabled") and config.get("reply_prompt")):
+            if not config.get("auto_reply_enabled"):
                 self.requests.requeue_auto_reply(row["id"], due_at=(now or time.time()) + 60)
                 continue
             try:
@@ -367,7 +358,7 @@ class AutoReplyRuntime:
                 if not reply:
                     reply = await self.responder.create_reply(
                         self._compose_prompt(
-                            row["account_key"], config["reply_prompt"]
+                            row["account_key"], config.get("reply_prompt")
                         )
                         + "\n\n"
                         + self.personas.reply_mode_instruction(
