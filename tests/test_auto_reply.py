@@ -251,6 +251,59 @@ class AutoReplyRuntimeTest(unittest.IsolatedAsyncioTestCase):
                 for marker in ("банк", "не проходит", "не получается")
             ))
 
+    async def test_old_queued_payment_reply_is_corrected_before_sending(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "old-payment.sqlite3"
+            database = Database(path)
+            database.initialize()
+            requests = DatabaseRequests(database)
+            requests.add_sender_account("buyer", "Buyer")
+            requests.save_campaign_settings({
+                "auto_reply_enabled": True,
+                "reply_prompt": "Тест покупки UC",
+                "reply_delay_min_minutes": 0,
+                "reply_delay_max_minutes": 0,
+                "recipient": "central_user",
+            })
+            requests.claim_received_message(
+                account_key="buyer",
+                telegram_message_id=10,
+                sender_id=9001,
+                message_text=(
+                    "Ссылка на оплату: https://example.test/pay/10\n"
+                    "сумма: 8100р\nid платежа: abc"
+                ),
+                recipient="central_user",
+            )
+            requests.enqueue_auto_reply(
+                account_key="buyer",
+                telegram_message_id=10,
+                due_at=0,
+                reply_text="Не проходит, пришлите новую ссылку?",
+                recipient="central_user",
+            )
+            settings = Settings(
+                database_path=path,
+                api_token="token",
+                telegram_api_id=123,
+                telegram_api_hash="hash",
+                telegram_session_dir=Path(directory) / "sessions",
+                allowed_recipients={"central_user"},
+                minimum_send_interval_seconds=0,
+                llm_api_key="test-key",
+            )
+            messaging = FakeMessaging()
+            runtime = AutoReplyRuntime(
+                settings, requests, FakeReplySender(), messaging, FakeResponder(),
+            )
+
+            await runtime.process_due_replies()
+
+            sent = messaging.sent[-1][1].casefold()
+            self.assertNotIn("?", sent)
+            self.assertNotIn("ссылк", sent)
+            self.assertNotIn("пришл", sent)
+
     async def test_session_json_can_supply_per_account_api_credentials(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             session_dir = Path(directory) / "sessions"

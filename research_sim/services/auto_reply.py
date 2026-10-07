@@ -362,6 +362,11 @@ class AutoReplyRuntime:
                 continue
             try:
                 reply = row.get("reply_text")
+                history = self.requests.get_conversation_context(
+                    row["account_key"],
+                    limit=12,
+                    recipient=row["recipient"],
+                )
                 if not reply:
                     reply = await self.responder.create_reply(
                         self._compose_prompt(
@@ -372,12 +377,20 @@ class AutoReplyRuntime:
                             seed=f"due-mode:{row['account_key']}:{row['id']}"
                         ),
                         row["message_text"],
-                        history=self.requests.get_conversation_context(
-                            row["account_key"],
-                            limit=12,
-                            recipient=row["recipient"],
-                        ),
+                        history=history,
                     )
+                if self.personas.payment_notice_instruction(row["message_text"]):
+                    corrected_reply = self.personas.enforce_payment_failure(
+                        reply,
+                        seed=f"due-payment:{row['account_key']}:{row['id']}",
+                        history=history,
+                    )
+                    if corrected_reply != reply:
+                        reply = self.personas.stylize_scheduled_text(
+                            row["account_key"],
+                            corrected_reply,
+                            seed=f"due-payment-style:{row['account_key']}:{row['id']}",
+                        )
                 recipient = row["recipient"]
                 await self.sender.mark_read_and_type(
                     row["account_key"],
