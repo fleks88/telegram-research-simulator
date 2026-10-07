@@ -211,6 +211,40 @@ class PersonaResearchTest(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(
             PersonaService.payment_notice_instruction("Сколько стоит 8100 UC?")
         )
+        link_instruction = PersonaService.payment_notice_instruction(
+            "8100 по входу 8100 рублей\n\n"
+            "Ссылка на оплату: https://example.test/payment/23234\n"
+            "сумма: 8100р\nid платежа: 231а"
+        )
+        self.assertIsNotNone(link_instruction)
+        self.assertIn("вопрос продавца не требуется", link_instruction)
+        self.assertIn("не проси новую ссылку", link_instruction)
+
+    def test_payment_failure_rejects_success_questions_and_new_link_requests(self) -> None:
+        bad_replies = (
+            "Оплатил, все получилось",
+            "Не проходит оплата, можете скинуть другую ссылку",
+            "Банк не дает оплатить, что делать?",
+        )
+        for index, reply in enumerate(bad_replies):
+            result = PersonaService.enforce_payment_failure(
+                reply,
+                seed=f"strict-payment:{index}",
+            )
+            lowered = result.casefold()
+            self.assertNotIn("?", result)
+            self.assertNotIn("друг", lowered)
+            self.assertNotIn("ссылк", lowered)
+            self.assertNotIn("оплатил", lowered)
+            self.assertTrue(
+                any(marker in lowered for marker in ("банк", "не проходит", "не получается"))
+            )
+
+        valid = "Не получается оплатить, банк отклоняет"
+        self.assertEqual(
+            PersonaService.enforce_payment_failure(valid, seed="valid-payment"),
+            valid,
+        )
 
     def test_canned_followup_question_is_removed(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

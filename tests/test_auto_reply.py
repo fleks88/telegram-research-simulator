@@ -244,10 +244,12 @@ class AutoReplyRuntimeTest(unittest.IsolatedAsyncioTestCase):
                 row["message_text"] == "Есть оплата картой"
                 for row in responder.history
             ))
-            self.assertEqual(
-                messaging.sent[-1][1],
-                "Опять отклонили, пришлите ссылку для карты",
-            )
+            self.assertNotIn("ссылк", messaging.sent[-1][1].casefold())
+            self.assertNotIn("?", messaging.sent[-1][1])
+            self.assertTrue(any(
+                marker in messaging.sent[-1][1].casefold()
+                for marker in ("банк", "не проходит", "не получается")
+            ))
 
     async def test_session_json_can_supply_per_account_api_credentials(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

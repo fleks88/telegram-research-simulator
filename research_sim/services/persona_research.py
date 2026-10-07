@@ -94,11 +94,18 @@ class PersonaResearchService:
         payment_instruction = self.personas.payment_notice_instruction(message)
         if payment_instruction:
             effective_prompt += "\n\n" + payment_instruction
+        history = self.requests.get_conversation_context(account_key, limit=12)
         reply = await self.responder.create_reply(
             effective_prompt,
             message,
-            history=self.requests.get_conversation_context(account_key, limit=12),
+            history=history,
         )
+        if payment_instruction:
+            reply = self.personas.enforce_payment_failure(
+                reply,
+                seed=f"preview-payment:{account_key}:{message}",
+                history=history,
+            )
         reply = self.personas.stylize_scheduled_text(
             account_key,
             reply,

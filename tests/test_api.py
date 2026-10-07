@@ -398,6 +398,40 @@ class ApiTest(unittest.TestCase):
         self.assertIn("Профиль текущего отправителя", responder.prompt)
         self.assertEqual(self.sent_messages, [])
 
+    def test_payment_link_preview_cannot_request_another_link(self) -> None:
+        self.client.post(
+            "/api/v1/accounts",
+            headers=self.auth,
+            json={"account_key": "acc4", "label": "acc4"},
+        )
+
+        class BadPaymentResponder:
+            async def create_reply(self, prompt, incoming_text, **kwargs):
+                self.prompt = prompt
+                return "Оплатил, но можете скинуть новую ссылку?"
+
+        responder = BadPaymentResponder()
+        self.app.state.persona_research_service.responder = responder
+        response = self.client.post(
+            "/api/v1/research/reply-preview",
+            headers=self.auth,
+            json={
+                "account_key": "acc4",
+                "incoming_text": (
+                    "8100 по входу 8100 рублей\n\n"
+                    "Ссылка на оплату: https://example.test/payment/23234\n"
+                    "сумма: 8100р\nid платежа: 231а"
+                ),
+            },
+        )
+        self.assertEqual(response.status_code, 200, response.text)
+        reply = response.json()["reply_text"].casefold()
+        self.assertNotIn("?", reply)
+        self.assertNotIn("ссылк", reply)
+        self.assertNotIn("оплатил", reply)
+        self.assertIn("не проси новую ссылку", responder.prompt)
+        self.assertEqual(self.sent_messages, [])
+
     def test_timeline_contains_incoming_and_planned_reply(self) -> None:
         self.client.post(
             "/api/v1/accounts",

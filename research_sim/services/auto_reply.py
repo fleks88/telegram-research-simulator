@@ -283,11 +283,18 @@ class AutoReplyRuntime:
                     message_text,
                     history=history,
                 )
-            reply = self.personas.enforce_buyer_voice(
-                reply,
-                seed=f"buyer:{account_key}:{message.id}",
-                history=history,
-            )
+            if payment_instruction:
+                reply = self.personas.enforce_payment_failure(
+                    reply,
+                    seed=f"payment:{account_key}:{message.id}",
+                    history=history,
+                )
+            else:
+                reply = self.personas.enforce_buyer_voice(
+                    reply,
+                    seed=f"buyer:{account_key}:{message.id}",
+                    history=history,
+                )
             if unknown_term_to_ask:
                 reply = self.personas.apply_reply_habits(
                     account_key,
