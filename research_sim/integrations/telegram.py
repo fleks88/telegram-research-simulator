@@ -37,10 +37,12 @@ class TelethonSender:
                 f"authorized Telethon session is missing for account '{account_key}'"
             )
         session_path.parent.mkdir(parents=True, exist_ok=True)
+        client_profile = self._client_profile_for(account_key)
         client = client_factory(
             session=str(session_path),
             api_id=api_id,
             api_hash=api_hash,
+            **client_profile,
         )
         await client.connect()
         if not await client.is_user_authorized():
@@ -113,24 +115,34 @@ class TelethonSender:
 
             client_factory = TelegramClient
         api_id, api_hash = self._credentials_for(account_key)
+        client_profile = self._client_profile_for(account_key)
         return client_factory(
             session=session_path,
             api_id=api_id,
             api_hash=api_hash,
+            **client_profile,
         )
 
-    def _credentials_for(self, account_key: str) -> tuple[int, str]:
+    def _metadata_for(self, account_key: str) -> dict[str, Any]:
         metadata_path = (
             Path(self.settings.telegram_session_dir).expanduser()
             / f"{account_key}.json"
         )
-        if metadata_path.is_file():
-            try:
-                metadata = json.loads(metadata_path.read_text(encoding="utf-8-sig"))
-            except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
-                raise RuntimeError(
-                    f"invalid session metadata for '{account_key}'"
-                ) from exc
+        if not metadata_path.is_file():
+            return {}
+        try:
+            metadata = json.loads(metadata_path.read_text(encoding="utf-8-sig"))
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise RuntimeError(
+                f"invalid session metadata for '{account_key}'"
+            ) from exc
+        if not isinstance(metadata, dict):
+            raise RuntimeError(f"invalid session metadata for '{account_key}'")
+        return metadata
+
+    def _credentials_for(self, account_key: str) -> tuple[int, str]:
+        metadata = self._metadata_for(account_key)
+        if metadata:
             telegram = metadata.get("telegram", {})
             if not isinstance(telegram, dict):
                 telegram = {}
@@ -164,3 +176,31 @@ class TelethonSender:
                 f"or supplied in {account_key}.json"
             )
         return self.settings.telegram_api_id, self.settings.telegram_api_hash
+
+    def _client_profile_for(self, account_key: str) -> dict[str, str]:
+        metadata = self._metadata_for(account_key)
+        telegram = metadata.get("telegram", {})
+        if not isinstance(telegram, dict):
+            telegram = {}
+
+        aliases = {
+            "device_model": ("device_model", "device"),
+            "system_version": ("system_version", "sdk"),
+            "app_version": ("app_version",),
+            "lang_code": ("lang_code", "lang_pack"),
+            "system_lang_code": ("system_lang_code", "system_lang_pack"),
+        }
+        profile: dict[str, str] = {}
+        for target, source_names in aliases.items():
+            raw_value: Any = None
+            for source in (metadata, telegram):
+                for name in source_names:
+                    candidate = source.get(name)
+                    if isinstance(candidate, str) and candidate.strip():
+                        raw_value = candidate
+                        break
+                if raw_value is not None:
+                    break
+            if raw_value is not None:
+                profile[target] = raw_value.strip()[:128]
+        return profile

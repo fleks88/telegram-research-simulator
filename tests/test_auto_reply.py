@@ -271,6 +271,43 @@ class AutoReplyRuntimeTest(unittest.IsolatedAsyncioTestCase):
                 (456, "personal-hash"),
             )
 
+    async def test_session_json_preserves_stable_client_profile(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            session_dir = Path(directory) / "sessions"
+            session_dir.mkdir()
+            (session_dir / "personal.json").write_text(
+                """{
+                    "app_id": 456,
+                    "app_hash": "personal-hash",
+                    "device": "Samsung SM-S918B",
+                    "sdk": "Android 14",
+                    "app_version": "10.14.5",
+                    "lang_pack": "ru",
+                    "system_lang_pack": "ru-RU"
+                }""",
+                encoding="utf-8",
+            )
+            settings = Settings(
+                database_path=Path(directory) / "test.sqlite3",
+                api_token="token",
+                telegram_api_id=None,
+                telegram_api_hash=None,
+                telegram_session_dir=session_dir,
+                allowed_recipients={"central_user"},
+            )
+            sender = TelethonSender(settings)
+
+            self.assertEqual(
+                sender._client_profile_for("personal"),
+                {
+                    "device_model": "Samsung SM-S918B",
+                    "system_version": "Android 14",
+                    "app_version": "10.14.5",
+                    "lang_code": "ru",
+                    "system_lang_code": "ru-RU",
+                },
+            )
+
     async def test_only_central_sender_is_answered_once(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             database = Database(Path(directory) / "test.sqlite3")
