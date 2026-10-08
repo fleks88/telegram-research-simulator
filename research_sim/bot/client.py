@@ -185,3 +185,62 @@ class ApiClient:
 
     async def auto_reply_status(self) -> Dict[str, Any]:
         return await self.request("GET", "/api/v1/auto-replies/status")
+
+    async def manual_events(self, operator_id: int) -> list[Dict[str, Any]]:
+        return await self.request(
+            "GET",
+            "/api/v1/manual/events",
+            params={"operator_id": operator_id},
+        )
+
+    async def mark_manual_event_notified(
+        self,
+        event_id: int,
+        operator_id: int,
+    ) -> Dict[str, Any]:
+        return await self.request(
+            "POST",
+            f"/api/v1/manual/events/{event_id}/notified",
+            json={"operator_id": operator_id},
+        )
+
+    async def manual_conversations(self) -> list[Dict[str, Any]]:
+        return await self.request("GET", "/api/v1/manual/conversations")
+
+    async def reply_manual_event(
+        self,
+        event_id: int,
+        *,
+        operator_id: int,
+        text: str,
+    ) -> Dict[str, Any]:
+        return await self.request(
+            "POST",
+            f"/api/v1/manual/events/{event_id}/reply",
+            json={"operator_id": operator_id, "text": text},
+        )
+
+    async def close_manual_conversation(
+        self,
+        account_key: str,
+        *,
+        operator_id: int,
+    ) -> Dict[str, Any]:
+        return await self.request(
+            "POST",
+            f"/api/v1/manual/conversations/{account_key}/close",
+            json={"operator_id": operator_id},
+        )
+
+    async def send_manual_message(
+        self,
+        account_key: str,
+        *,
+        operator_id: int,
+        text: str,
+    ) -> Dict[str, Any]:
+        return await self.request(
+            "POST",
+            f"/api/v1/manual/conversations/{account_key}/send",
+            json={"operator_id": operator_id, "text": text},
+        )

@@ -98,6 +98,16 @@ class ReplyPreviewResponse(BaseModel):
     reply_text: str
 
 
+class ManualOperatorAction(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    operator_id: int = Field(gt=0)
+
+
+class ManualReplyRequest(ManualOperatorAction):
+    text: str = Field(min_length=1, max_length=4096)
+
+
 class CampaignSettingsPayload(BaseModel):
     model_config = ConfigDict(extra="forbid")
 

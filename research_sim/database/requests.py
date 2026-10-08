@@ -294,6 +294,252 @@ class DatabaseRequests:
             )
             return cursor.rowcount == 1
 
+    def is_manual_conversation_active(
+        self,
+        account_key: str,
+        recipient: str,
+    ) -> bool:
+        with self.database.connect() as connection:
+            row = connection.execute(
+                """SELECT 1 FROM manual_conversations
+                   WHERE account_key = ? AND recipient = ? AND active = 1""",
+                (account_key, recipient),
+            ).fetchone()
+        return row is not None
+
+    def activate_manual_conversation(
+        self,
+        *,
+        account_key: str,
+        recipient: str,
+        telegram_message_id: int,
+    ) -> None:
+        now = time.time()
+        with self.database.connect() as connection:
+            connection.execute(
+                """UPDATE received_messages SET reply_status = 'ignored'
+                   WHERE account_key = ? AND reply_status = 'pending'
+                     AND EXISTS (
+                         SELECT 1 FROM pending_auto_replies q
+                         WHERE q.account_key = received_messages.account_key
+                           AND q.telegram_message_id = received_messages.telegram_message_id
+                           AND q.status IN ('queued', 'processing')
+                     )""",
+                (account_key,),
+            )
+            connection.execute(
+                """UPDATE pending_auto_replies
+                   SET status = 'cancelled', processed_at = ?
+                   WHERE account_key = ? AND status IN ('queued', 'processing')""",
+                (now, account_key),
+            )
+            connection.execute(
+                """INSERT INTO manual_conversations
+                   (account_key, recipient, active, triggered_message_id,
+                    started_at, updated_at)
+                   VALUES (?, ?, 1, ?, ?, ?)
+                   ON CONFLICT(account_key) DO UPDATE SET
+                       recipient = excluded.recipient,
+                       active = 1,
+                       triggered_message_id = excluded.triggered_message_id,
+                       started_at = excluded.started_at,
+                       updated_at = excluded.updated_at""",
+                (account_key, recipient, telegram_message_id, now, now),
+            )
+
+    def create_manual_event(
+        self,
+        *,
+        account_key: str,
+        recipient: str,
+        telegram_message_id: int,
+        incoming_text: str,
+        ai_draft: Optional[str] = None,
+    ) -> bool:
+        with self.database.connect() as connection:
+            cursor = connection.execute(
+                """INSERT OR IGNORE INTO manual_events
+                   (account_key, recipient, telegram_message_id, incoming_text,
+                    ai_draft, created_at)
+                   VALUES (?, ?, ?, ?, ?, ?)""",
+                (
+                    account_key,
+                    recipient,
+                    telegram_message_id,
+                    incoming_text,
+                    ai_draft,
+                    time.time(),
+                ),
+            )
+            if cursor.rowcount:
+                connection.execute(
+                    """UPDATE manual_conversations SET updated_at = ?
+                       WHERE account_key = ?""",
+                    (time.time(), account_key),
+                )
+            return cursor.rowcount == 1
+
+    def list_manual_events_for_operator(
+        self,
+        operator_id: int,
+        *,
+        limit: int = 20,
+    ) -> list[Dict[str, Any]]:
+        with self.database.connect() as connection:
+            rows = connection.execute(
+                """SELECT e.id, e.account_key, a.label, e.recipient,
+                          e.telegram_message_id, e.incoming_text, e.ai_draft,
+                          e.status, e.created_at
+                   FROM manual_events e
+                   JOIN telegram_accounts a ON a.account_key = e.account_key
+                   JOIN manual_conversations c
+                     ON c.account_key = e.account_key AND c.active = 1
+                   LEFT JOIN manual_event_notifications n
+                     ON n.event_id = e.id AND n.operator_id = ?
+                   WHERE n.event_id IS NULL
+                   ORDER BY e.id LIMIT ?""",
+                (operator_id, limit),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def mark_manual_event_notified(self, event_id: int, operator_id: int) -> None:
+        with self.database.connect() as connection:
+            connection.execute(
+                """INSERT OR IGNORE INTO manual_event_notifications
+                   (event_id, operator_id, delivered_at) VALUES (?, ?, ?)""",
+                (event_id, operator_id, time.time()),
+            )
+
+    def list_manual_conversations(self) -> list[Dict[str, Any]]:
+        with self.database.connect() as connection:
+            rows = connection.execute(
+                """SELECT c.account_key, a.label, c.recipient, c.started_at,
+                          c.updated_at,
+                          COUNT(CASE WHEN e.status = 'open' THEN 1 END) AS open_count,
+                          MAX(CASE WHEN e.status = 'open' THEN e.id END) AS latest_open_event_id,
+                          (
+                              SELECT draft.ai_draft FROM manual_events draft
+                              WHERE draft.account_key = c.account_key
+                                AND draft.ai_draft IS NOT NULL
+                              ORDER BY draft.id DESC LIMIT 1
+                          ) AS latest_ai_draft
+                   FROM manual_conversations c
+                   JOIN telegram_accounts a ON a.account_key = c.account_key
+                   LEFT JOIN manual_events e ON e.account_key = c.account_key
+                   WHERE c.active = 1
+                   GROUP BY c.account_key, a.label, c.recipient,
+                            c.started_at, c.updated_at
+                   ORDER BY c.updated_at DESC"""
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def get_manual_conversation(self, account_key: str) -> Optional[Dict[str, Any]]:
+        with self.database.connect() as connection:
+            row = connection.execute(
+                """SELECT c.account_key, a.label, a.enabled, c.recipient,
+                          c.started_at, c.updated_at
+                   FROM manual_conversations c
+                   JOIN telegram_accounts a ON a.account_key = c.account_key
+                   WHERE c.account_key = ? AND c.active = 1""",
+                (account_key,),
+            ).fetchone()
+        return dict(row) if row is not None else None
+
+    def get_manual_event(self, event_id: int) -> Optional[Dict[str, Any]]:
+        with self.database.connect() as connection:
+            row = connection.execute(
+                """SELECT e.*, a.label
+                   FROM manual_events e
+                   JOIN telegram_accounts a ON a.account_key = e.account_key
+                   WHERE e.id = ?""",
+                (event_id,),
+            ).fetchone()
+        return dict(row) if row is not None else None
+
+    def claim_manual_event(self, event_id: int) -> Optional[Dict[str, Any]]:
+        now = time.time()
+        with self.database.connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            connection.execute(
+                """UPDATE manual_events
+                   SET status = 'open', processing_at = NULL,
+                       error = 'operator claim expired'
+                   WHERE status = 'processing' AND processing_at < ?""",
+                (now - 300,),
+            )
+            row = connection.execute(
+                """SELECT e.*, a.enabled
+                   FROM manual_events e
+                   JOIN telegram_accounts a ON a.account_key = e.account_key
+                   JOIN manual_conversations c ON c.account_key = e.account_key
+                   WHERE e.id = ? AND e.status = 'open' AND c.active = 1""",
+                (event_id,),
+            ).fetchone()
+            if row is None:
+                return None
+            connection.execute(
+                """UPDATE manual_events
+                   SET status = 'processing', processing_at = ?, error = NULL
+                   WHERE id = ?""",
+                (now, event_id),
+            )
+        return dict(row)
+
+    def release_manual_event(self, event_id: int, error: str) -> None:
+        with self.database.connect() as connection:
+            connection.execute(
+                """UPDATE manual_events
+                   SET status = 'open', processing_at = NULL, error = ?
+                   WHERE id = ? AND status = 'processing'""",
+                (error[:500], event_id),
+            )
+
+    def finish_manual_event(
+        self,
+        event_id: int,
+        *,
+        operator_id: int,
+        sent_text: str,
+    ) -> None:
+        now = time.time()
+        with self.database.connect() as connection:
+            connection.execute(
+                """UPDATE manual_events
+                   SET status = 'answered', processing_at = NULL,
+                       answered_at = ?, answered_by = ?,
+                       sent_text = ?, error = NULL
+                   WHERE id = ? AND status = 'processing'""",
+                (now, operator_id, sent_text, event_id),
+            )
+            connection.execute(
+                """UPDATE manual_conversations SET updated_at = ?
+                   WHERE account_key = (
+                       SELECT account_key FROM manual_events WHERE id = ?
+                   )""",
+                (now, event_id),
+            )
+
+    def close_manual_conversation(self, account_key: str) -> bool:
+        now = time.time()
+        with self.database.connect() as connection:
+            cursor = connection.execute(
+                """UPDATE manual_conversations SET active = 0, updated_at = ?
+                   WHERE account_key = ? AND active = 1""",
+                (now, account_key),
+            )
+            connection.execute(
+                """UPDATE manual_events
+                   SET status = 'cancelled', processing_at = NULL
+                   WHERE account_key = ? AND status IN ('open', 'processing')""",
+                (account_key,),
+            )
+            connection.execute(
+                """UPDATE received_messages SET reply_status = 'ignored'
+                   WHERE account_key = ? AND reply_status = 'pending'""",
+                (account_key,),
+            )
+        return cursor.rowcount == 1
+
     def claim_due_auto_replies(
         self,
         *,

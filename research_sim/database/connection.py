@@ -109,6 +109,40 @@ CREATE TABLE IF NOT EXISTS pending_term_questions (
     asked_at REAL NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS manual_conversations (
+    account_key TEXT PRIMARY KEY REFERENCES telegram_accounts(account_key) ON DELETE CASCADE,
+    recipient TEXT NOT NULL,
+    active INTEGER NOT NULL DEFAULT 1 CHECK (active IN (0, 1)),
+    triggered_message_id INTEGER NOT NULL,
+    started_at REAL NOT NULL,
+    updated_at REAL NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS manual_events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    account_key TEXT NOT NULL REFERENCES telegram_accounts(account_key) ON DELETE CASCADE,
+    recipient TEXT NOT NULL,
+    telegram_message_id INTEGER NOT NULL,
+    incoming_text TEXT NOT NULL,
+    ai_draft TEXT,
+    status TEXT NOT NULL DEFAULT 'open'
+        CHECK (status IN ('open', 'processing', 'answered', 'cancelled')),
+    created_at REAL NOT NULL,
+    processing_at REAL,
+    answered_at REAL,
+    answered_by INTEGER,
+    sent_text TEXT,
+    error TEXT,
+    UNIQUE (account_key, telegram_message_id)
+);
+
+CREATE TABLE IF NOT EXISTS manual_event_notifications (
+    event_id INTEGER NOT NULL REFERENCES manual_events(id) ON DELETE CASCADE,
+    operator_id INTEGER NOT NULL,
+    delivered_at REAL NOT NULL,
+    PRIMARY KEY (event_id, operator_id)
+);
+
 CREATE UNIQUE INDEX IF NOT EXISTS idx_campaign_delivery_slot
 ON message_deliveries(campaign_id, campaign_day, campaign_slot)
 WHERE campaign_id IS NOT NULL;
@@ -118,6 +152,9 @@ ON message_deliveries(recipient, created_at DESC);
 
 CREATE INDEX IF NOT EXISTS idx_pending_auto_replies_due
 ON pending_auto_replies(status, due_at);
+
+CREATE INDEX IF NOT EXISTS idx_manual_events_status
+ON manual_events(status, created_at);
 
 """
 

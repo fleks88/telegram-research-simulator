@@ -24,6 +24,8 @@ from .schemas import (
     PersonaProfilePayload,
     ReplyPreviewRequest,
     ReplyPreviewResponse,
+    ManualOperatorAction,
+    ManualReplyRequest,
     SenderAccountCreate,
     SenderAccountEnabledUpdate,
     SenderAccountResponse,
@@ -288,6 +290,137 @@ def get_auto_reply_status(request: Request) -> dict:
     return {
         "pending": len(pending),
         "items": pending,
+    }
+
+
+@protected_router.get("/manual/events")
+def get_manual_events(
+    request: Request,
+    operator_id: int = Query(gt=0),
+) -> list[dict]:
+    return request.app.state.database_requests.list_manual_events_for_operator(
+        operator_id,
+        limit=20,
+    )
+
+
+@protected_router.post("/manual/events/{event_id}/notified")
+def mark_manual_event_notified(
+    event_id: int,
+    payload: ManualOperatorAction,
+    request: Request,
+) -> dict:
+    if request.app.state.database_requests.get_manual_event(event_id) is None:
+        raise HTTPException(status_code=404, detail="manual event not found")
+    request.app.state.database_requests.mark_manual_event_notified(
+        event_id,
+        payload.operator_id,
+    )
+    return {"status": "ok"}
+
+
+@protected_router.get("/manual/conversations")
+def get_manual_conversations(request: Request) -> list[dict]:
+    return request.app.state.database_requests.list_manual_conversations()
+
+
+@protected_router.post("/manual/events/{event_id}/reply")
+async def reply_to_manual_event(
+    event_id: int,
+    payload: ManualReplyRequest,
+    request: Request,
+) -> dict:
+    requests = request.app.state.database_requests
+    event = requests.claim_manual_event(event_id)
+    if event is None:
+        raise HTTPException(
+            status_code=409,
+            detail="message was already answered or manual mode is closed",
+        )
+    accounts = requests.list_sender_accounts()
+    account = next(
+        (item for item in accounts if item.account_key == event["account_key"]),
+        None,
+    )
+    if account is None or not account.enabled:
+        requests.release_manual_event(event_id, "sender account is unavailable")
+        raise HTTPException(status_code=409, detail="sender account is unavailable")
+    try:
+        result = await request.app.state.messaging_service.send_message(
+            event["recipient"],
+            payload.text,
+            sender_account_index=account.account_index,
+        )
+    except Exception as exc:
+        requests.release_manual_event(event_id, str(exc))
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    requests.finish_manual_event(
+        event_id,
+        operator_id=payload.operator_id,
+        sent_text=result.text,
+    )
+    requests.set_received_message_status(
+        event["account_key"],
+        event["telegram_message_id"],
+        "replied",
+    )
+    return {
+        "status": "sent",
+        "event_id": event_id,
+        "account_key": event["account_key"],
+        "recipient": result.recipient,
+        "text": result.text,
+        "operator_id": payload.operator_id,
+    }
+
+
+@protected_router.post("/manual/conversations/{account_key}/send")
+async def send_to_manual_conversation(
+    account_key: str,
+    payload: ManualReplyRequest,
+    request: Request,
+) -> dict:
+    requests = request.app.state.database_requests
+    conversation = requests.get_manual_conversation(account_key)
+    if conversation is None:
+        raise HTTPException(status_code=404, detail="active manual conversation not found")
+    if not conversation["enabled"]:
+        raise HTTPException(status_code=409, detail="sender account is unavailable")
+    account = next(
+        item
+        for item in requests.list_sender_accounts()
+        if item.account_key == account_key
+    )
+    try:
+        result = await request.app.state.messaging_service.send_message(
+            conversation["recipient"],
+            payload.text,
+            sender_account_index=account.account_index,
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    return {
+        "status": "sent",
+        "account_key": account_key,
+        "recipient": result.recipient,
+        "text": result.text,
+        "operator_id": payload.operator_id,
+    }
+
+
+@protected_router.post("/manual/conversations/{account_key}/close")
+def close_manual_conversation(
+    account_key: str,
+    payload: ManualOperatorAction,
+    request: Request,
+) -> dict:
+    closed = request.app.state.database_requests.close_manual_conversation(account_key)
+    if not closed:
+        raise HTTPException(status_code=404, detail="active manual conversation not found")
+    return {
+        "status": "closed",
+        "account_key": account_key,
+        "operator_id": payload.operator_id,
     }
 
 

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import logging
@@ -50,6 +51,7 @@ ACCOUNT_UPLOAD = 26
 ACCOUNT_UPLOAD_NAME = 27
 CAMPAIGN_RECIPIENT = 28
 EDIT_RECIPIENT = 29
+MANUAL_REPLY = 30
 ACCOUNT_KEY_PATTERN = re.compile(r"^[a-zA-Z0-9_-]{1,48}$")
 PACK_SIZES = {8100, 3650, 1800, 660, 325, 60}
 TRAITS = [
@@ -83,6 +85,7 @@ def home_keyboard() -> InlineKeyboardMarkup:
                 InlineKeyboardButton("🧪 Preview", callback_data="flow:dialogue"),
             ],
             [InlineKeyboardButton("👥 Получатель / allowlist", callback_data="menu:recipient")],
+            [InlineKeyboardButton("🧑‍💻 Ручные диалоги", callback_data="menu:manual")],
         ]
     )
 
@@ -401,6 +404,277 @@ async def show_account_history(
     )
 
 
+def _manual_notification_text(
+    event: Dict[str, Any],
+    timeline: list[Dict[str, Any]],
+) -> str:
+    lines = [
+        f"🚨 Ручной режим · {event['label']} ({event['account_key']})",
+        f"Получатель: @{event['recipient']}",
+        "",
+        "Последние сообщения:",
+    ]
+    for row in reversed(timeline[:8]):
+        role = "👤" if row["kind"] == "incoming" else "🤖"
+        content = str(row.get("message_text", "")).replace("\n", " ")[:350]
+        if row["kind"] != "planned":
+            lines.append(f"{role} {content}")
+    if event.get("ai_draft"):
+        lines.extend([
+            "",
+            "🤖 Черновик ИИ — НЕ отправлен:",
+            str(event["ai_draft"])[:800],
+        ])
+    lines.extend([
+        "",
+        "Автоответы для этого аккаунта остановлены. Ответ отправит оператор.",
+    ])
+    return "\n".join(lines)[:3900]
+
+
+async def _manual_notification_loop(application: Application) -> None:
+    api: ApiClient = application.bot_data["api"]
+    while True:
+        try:
+            for operator_id in application.bot_data["admin_ids"]:
+                try:
+                    events = await api.manual_events(operator_id)
+                except Exception as exc:
+                    LOGGER.warning(
+                        "Could not load manual notifications for %s: %s",
+                        operator_id,
+                        exc,
+                    )
+                    continue
+                for event in events:
+                    try:
+                        timeline = await api.account_timeline(
+                            event["account_key"],
+                            limit=12,
+                        )
+                        buttons = []
+                        if event["status"] == "open":
+                            buttons.append([InlineKeyboardButton(
+                                "✍️ Ответить",
+                                callback_data=f"manualreply:{event['id']}",
+                            )])
+                        buttons.append([InlineKeyboardButton(
+                            "💬 Открыть диалог",
+                            callback_data=f"manualchat:{event['account_key']}",
+                        )])
+                        await application.bot.send_message(
+                            chat_id=operator_id,
+                            text=_manual_notification_text(event, timeline),
+                            reply_markup=InlineKeyboardMarkup(buttons),
+                        )
+                        await api.mark_manual_event_notified(
+                            event["id"],
+                            operator_id,
+                        )
+                    except Exception as exc:
+                        LOGGER.warning(
+                            "Could not deliver manual event %s to %s: %s",
+                            event["id"],
+                            operator_id,
+                            exc,
+                        )
+        except asyncio.CancelledError:
+            raise
+        await asyncio.sleep(5)
+
+
+async def show_manual_conversations(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+) -> None:
+    if not _is_authorized(update, context):
+        await _deny(update)
+        return
+    try:
+        conversations = await _api(context).manual_conversations()
+    except Exception as exc:
+        await _reply(update, f"Не удалось загрузить ручные диалоги: {exc}")
+        return
+    if not conversations:
+        await _reply(
+            update,
+            "Активных ручных диалогов нет.",
+            reply_markup=back_home_keyboard(),
+        )
+        return
+    buttons = [
+        [InlineKeyboardButton(
+            f"💬 {item['label']} · новых: {item['open_count']}",
+            callback_data=f"manualchat:{item['account_key']}",
+        )]
+        for item in conversations
+    ]
+    buttons.append([InlineKeyboardButton("← Главное меню", callback_data="menu:home")])
+    await _reply(
+        update,
+        "Ручные диалоги. Пока режим активен, ИИ ничего не отправляет:",
+        reply_markup=InlineKeyboardMarkup(buttons),
+    )
+
+
+async def show_manual_chat(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+) -> None:
+    if not _is_authorized(update, context):
+        await _deny(update)
+        return
+    query = update.callback_query
+    account_key = query.data.split(":", 1)[1]
+    try:
+        conversations = await _api(context).manual_conversations()
+        conversation = next(
+            (item for item in conversations if item["account_key"] == account_key),
+            None,
+        )
+        timeline = await _api(context).account_timeline(account_key, limit=20)
+    except Exception as exc:
+        await _reply(update, f"Не удалось загрузить диалог: {exc}")
+        return
+    if conversation is None:
+        await _reply(update, "Ручной режим для этого диалога уже завершён.")
+        return
+    lines = [f"💬 Ручной диалог: {conversation['label']} (@{conversation['recipient']})"]
+    for row in reversed(timeline):
+        if row["kind"] == "planned":
+            continue
+        role = "👤 Человек" if row["kind"] == "incoming" else f"🤖 {account_key}"
+        content = str(row.get("message_text", "")).replace("\n", " ")[:500]
+        lines.append(f"{role}: {content}")
+    if conversation.get("latest_ai_draft"):
+        lines.extend([
+            "🤖 Черновик ИИ на платёжном триггере — НЕ отправлен:",
+            str(conversation["latest_ai_draft"])[:800],
+        ])
+    buttons = []
+    if conversation.get("latest_open_event_id"):
+        buttons.append([InlineKeyboardButton(
+            "✍️ Ответить на последнее",
+            callback_data=f"manualreply:{conversation['latest_open_event_id']}",
+        )])
+    buttons.extend([
+        [InlineKeyboardButton(
+            "✍️ Написать сообщение",
+            callback_data=f"manualsend:{account_key}",
+        )],
+        [InlineKeyboardButton(
+            "▶️ Вернуть автоответы",
+            callback_data=f"manualclose:{account_key}",
+        )],
+        [InlineKeyboardButton("← Ручные диалоги", callback_data="menu:manual")],
+    ])
+    await _reply(
+        update,
+        "\n\n".join(lines)[-3900:],
+        reply_markup=InlineKeyboardMarkup(buttons),
+    )
+
+
+async def manual_reply_start(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+) -> int:
+    if not _is_authorized(update, context):
+        await _deny(update)
+        return ConversationHandler.END
+    query = update.callback_query
+    await query.answer()
+    context.user_data.pop("manual_account_key", None)
+    context.user_data["manual_event_id"] = int(query.data.split(":", 1)[1])
+    await query.edit_message_text(
+        "Введите ручной ответ. Он будет отправлен от имени нужного аккаунта без изменений:",
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("Отмена", callback_data="flow:cancel")]
+        ]),
+    )
+    return MANUAL_REPLY
+
+
+async def manual_send_start(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+) -> int:
+    if not _is_authorized(update, context):
+        await _deny(update)
+        return ConversationHandler.END
+    query = update.callback_query
+    await query.answer()
+    context.user_data.pop("manual_event_id", None)
+    context.user_data["manual_account_key"] = query.data.split(":", 1)[1]
+    await query.edit_message_text(
+        "Введите сообщение. Оно будет отправлено от имени аккаунта без изменений:",
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("Отмена", callback_data="flow:cancel")]
+        ]),
+    )
+    return MANUAL_REPLY
+
+
+async def manual_reply_entered(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+) -> int:
+    if not _is_authorized(update, context):
+        await _deny(update)
+        return ConversationHandler.END
+    operator_id = update.effective_user.id
+    try:
+        if "manual_event_id" in context.user_data:
+            event_id = context.user_data.pop("manual_event_id")
+            result = await _api(context).reply_manual_event(
+                event_id,
+                operator_id=operator_id,
+                text=update.effective_message.text,
+            )
+        else:
+            account_key = context.user_data.pop("manual_account_key")
+            result = await _api(context).send_manual_message(
+                account_key,
+                operator_id=operator_id,
+                text=update.effective_message.text,
+            )
+    except Exception as exc:
+        await update.effective_message.reply_text(
+            f"Не удалось отправить: {exc}\nВозможно, другой оператор уже ответил.",
+            reply_markup=home_keyboard(),
+        )
+        return ConversationHandler.END
+    await update.effective_message.reply_text(
+        f"✅ Отправлено от {result['account_key']}:\n{result['text']}",
+        reply_markup=home_keyboard(),
+    )
+    return ConversationHandler.END
+
+
+async def close_manual_chat(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+) -> None:
+    if not _is_authorized(update, context):
+        await _deny(update)
+        return
+    query = update.callback_query
+    await query.answer()
+    account_key = query.data.split(":", 1)[1]
+    try:
+        await _api(context).close_manual_conversation(
+            account_key,
+            operator_id=query.from_user.id,
+        )
+    except Exception as exc:
+        await query.edit_message_text(f"Не удалось завершить ручной режим: {exc}")
+        return
+    await query.edit_message_text(
+        f"Автоответы для {account_key} снова разрешены.",
+        reply_markup=home_keyboard(),
+    )
+
+
 async def show_campaign(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not _is_authorized(update, context):
         await _deny(update)
@@ -543,6 +817,8 @@ async def menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         await show_auto_reply_menu(update, context)
     elif value == "menu:recipient":
         await show_recipient_menu(update, context)
+    elif value == "menu:manual":
+        await show_manual_conversations(update, context)
     elif value.startswith("proposals:"):
         await render_dialogue_proposals(update, context, value.split(":", 1)[1])
     elif value.startswith("history:"):
@@ -1826,9 +2102,19 @@ async def post_init(application: Application) -> None:
             BotCommand("start", "Открыть панель управления"),
         ]
     )
+    application.bot_data["manual_notification_task"] = asyncio.create_task(
+        _manual_notification_loop(application)
+    )
 
 
 async def post_shutdown(application: Application) -> None:
+    task = application.bot_data.get("manual_notification_task")
+    if task is not None:
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
     await application.bot_data["api"].close()
 
 
@@ -1878,6 +2164,11 @@ def build_application() -> Application:
             CallbackQueryHandler(edit_reply_delay_start, pattern=r"^flow:reply_delay$"),
             CallbackQueryHandler(edit_activation_rules_start, pattern=r"^flow:activation_rules$"),
             CallbackQueryHandler(edit_recipient_start, pattern=r"^flow:recipient$"),
+            CallbackQueryHandler(manual_reply_start, pattern=r"^manualreply:\d+$"),
+            CallbackQueryHandler(
+                manual_send_start,
+                pattern=r"^manualsend:[a-zA-Z0-9_-]+$",
+            ),
         ],
         states={
             ADD_ACCOUNT_KEY: [
@@ -1947,6 +2238,9 @@ def build_application() -> Application:
             EDIT_RECIPIENT: [
                 MessageHandler(filters.TEXT & ~filters.COMMAND, edit_recipient_entered)
             ],
+            MANUAL_REPLY: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, manual_reply_entered)
+            ],
         },
         fallbacks=[
             CommandHandler("cancel", cancel),
@@ -1972,6 +2266,12 @@ def build_application() -> Application:
             menu_callback,
             pattern=r"^(menu:|history:|account:|proposals:)",
         )
+    )
+    application.add_handler(
+        CallbackQueryHandler(show_manual_chat, pattern=r"^manualchat:[a-zA-Z0-9_-]+$")
+    )
+    application.add_handler(
+        CallbackQueryHandler(close_manual_chat, pattern=r"^manualclose:[a-zA-Z0-9_-]+$")
     )
     application.add_handler(
         CallbackQueryHandler(

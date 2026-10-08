@@ -74,8 +74,13 @@ class AutoReplyRuntime:
     async def _sync_accounts(self) -> None:
         campaign_record = self.requests.get_campaign_settings()
         config = campaign_record.config if campaign_record else {}
+        manual_accounts = {
+            item["account_key"]
+            for item in self.requests.list_manual_conversations()
+        }
+        automatic_enabled = bool(config.get("auto_reply_enabled"))
         should_listen = bool(
-            config.get("auto_reply_enabled")
+            (automatic_enabled or manual_accounts)
             and config.get("recipient")
         )
         if not should_listen:
@@ -89,11 +94,13 @@ class AutoReplyRuntime:
             for account_key in list(self._handlers):
                 await self._remove_account(account_key)
             return
-        if not self.settings.llm_api_key:
+        if automatic_enabled and not self.settings.llm_api_key:
             LOGGER.error("Auto-replies enabled but LLM_API_KEY is not configured")
-            for account_key in list(self._handlers):
-                await self._remove_account(account_key)
-            return
+            automatic_enabled = False
+            if not manual_accounts:
+                for account_key in list(self._handlers):
+                    await self._remove_account(account_key)
+                return
 
         if self._active_recipient != recipient:
             for account_key in list(self._handlers):
@@ -103,6 +110,7 @@ class AutoReplyRuntime:
             account.account_key
             for account in self.requests.list_sender_accounts()
             if account.enabled
+            and (automatic_enabled or account.account_key in manual_accounts)
         }
         for account_key in set(self._handlers) - accounts:
             await self._remove_account(account_key)
@@ -193,6 +201,15 @@ class AutoReplyRuntime:
             recipient=recipient,
         )
         if not claimed:
+            return
+
+        if self.requests.is_manual_conversation_active(account_key, recipient):
+            self.requests.create_manual_event(
+                account_key=account_key,
+                recipient=recipient,
+                telegram_message_id=int(message.id),
+                incoming_text=message_text,
+            )
             return
 
         if not (
@@ -315,6 +332,20 @@ class AutoReplyRuntime:
             )
             LOGGER.exception("Could not prepare automatic reply for %s", account_key)
             return
+        if payment_instruction:
+            self.requests.activate_manual_conversation(
+                account_key=account_key,
+                recipient=recipient,
+                telegram_message_id=int(message.id),
+            )
+            self.requests.create_manual_event(
+                account_key=account_key,
+                recipient=recipient,
+                telegram_message_id=int(message.id),
+                incoming_text=message_text,
+                ai_draft=reply,
+            )
+            return
         self.requests.enqueue_auto_reply(
             account_key=account_key,
             telegram_message_id=int(message.id),
@@ -347,6 +378,21 @@ class AutoReplyRuntime:
                 self.requests.set_received_message_status(
                     row["account_key"], row["telegram_message_id"], "ignored"
                 )
+                continue
+            if self.personas.payment_notice_instruction(row["message_text"]):
+                self.requests.activate_manual_conversation(
+                    account_key=row["account_key"],
+                    recipient=row["recipient"],
+                    telegram_message_id=row["telegram_message_id"],
+                )
+                self.requests.create_manual_event(
+                    account_key=row["account_key"],
+                    recipient=row["recipient"],
+                    telegram_message_id=row["telegram_message_id"],
+                    incoming_text=row["message_text"],
+                    ai_draft=row.get("reply_text"),
+                )
+                self.requests.finish_auto_reply(row["id"], status="cancelled")
                 continue
             accounts = self.requests.list_sender_accounts()
             account = next(

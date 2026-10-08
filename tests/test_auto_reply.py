@@ -130,6 +130,50 @@ class LearningResponder(FakeResponder):
 
 
 class AutoReplyRuntimeTest(unittest.IsolatedAsyncioTestCase):
+    async def test_manual_dialog_keeps_listening_when_auto_replies_are_disabled(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            database = Database(Path(directory) / "manual-listener.sqlite3")
+            database.initialize()
+            requests = DatabaseRequests(database)
+            requests.add_sender_account("personal", "Personal")
+            requests.save_campaign_settings({
+                "auto_reply_enabled": False,
+                "recipient": "central_user",
+            })
+            requests.activate_manual_conversation(
+                account_key="personal",
+                recipient="central_user",
+                telegram_message_id=1,
+            )
+            settings = Settings(
+                database_path=Path(directory) / "manual-listener.sqlite3",
+                api_token="token",
+                telegram_api_id=123,
+                telegram_api_hash="hash",
+                telegram_session_dir=Path(directory) / "sessions",
+                allowed_recipients=set(),
+                minimum_send_interval_seconds=0,
+                llm_api_key=None,
+            )
+            sender = FakeListenerSender()
+            runtime = AutoReplyRuntime(
+                settings,
+                requests,
+                sender,
+                FakeMessaging(),
+                FakeResponder(),
+            )
+
+            await runtime._sync_accounts()
+            self.assertIsNotNone(sender.client.callback)
+            await sender.client.callback(
+                FakeEvent(2, 1002, "manual incoming", username="central_user")
+            )
+
+            events = requests.list_manual_events_for_operator(101)
+            self.assertEqual(len(events), 1)
+            self.assertEqual(events[0]["incoming_text"], "manual incoming")
+
     async def test_listener_filters_incoming_username_without_resolving_entity(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             database = Database(Path(directory) / "listener.sqlite3")
@@ -244,12 +288,25 @@ class AutoReplyRuntimeTest(unittest.IsolatedAsyncioTestCase):
                 row["message_text"] == "Есть оплата картой"
                 for row in responder.history
             ))
-            self.assertNotIn("ссылк", messaging.sent[-1][1].casefold())
-            self.assertNotIn("?", messaging.sent[-1][1])
+            self.assertEqual(len(messaging.sent), 1)
+            events = requests.list_manual_events_for_operator(101)
+            self.assertEqual(len(events), 1)
+            self.assertEqual(events[0]["telegram_message_id"], 2)
+            draft = events[0]["ai_draft"]
+            self.assertNotIn("ссылк", draft.casefold())
+            self.assertNotIn("?", draft)
             self.assertTrue(any(
-                marker in messaging.sent[-1][1].casefold()
+                marker in draft.casefold()
                 for marker in ("банк", "не проходит", "не получается")
             ))
+
+            await runtime._handle_message(
+                "buyer", 9001, FakeEvent(3, 9001, "Ну что получилось?"),
+            )
+            events = requests.list_manual_events_for_operator(101)
+            self.assertEqual(len(events), 2)
+            self.assertIsNone(events[-1]["ai_draft"])
+            self.assertEqual(len(messaging.sent), 1)
 
     async def test_old_queued_payment_reply_is_corrected_before_sending(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -299,10 +356,11 @@ class AutoReplyRuntimeTest(unittest.IsolatedAsyncioTestCase):
 
             await runtime.process_due_replies()
 
-            sent = messaging.sent[-1][1].casefold()
-            self.assertNotIn("?", sent)
-            self.assertNotIn("ссылк", sent)
-            self.assertNotIn("пришл", sent)
+            self.assertEqual(messaging.sent, [])
+            events = requests.list_manual_events_for_operator(101)
+            self.assertEqual(len(events), 1)
+            self.assertEqual(events[0]["telegram_message_id"], 10)
+            self.assertIn("пришлите новую ссылку", events[0]["ai_draft"].casefold())
 
     async def test_session_json_can_supply_per_account_api_credentials(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

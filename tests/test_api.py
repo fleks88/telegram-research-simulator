@@ -461,6 +461,109 @@ class ApiTest(unittest.TestCase):
         self.assertEqual(by_kind["planned"]["message_text"], "Planned account reply")
         self.assertEqual(by_kind["planned"]["due_at"], 2_000_000_000)
 
+    def test_manual_event_is_delivered_per_operator_and_answered_once(self) -> None:
+        self.client.post(
+            "/api/v1/accounts",
+            headers=self.auth,
+            json={"account_key": "acc1", "label": "Account 1"},
+        )
+        requests = self.app.state.database_requests
+        requests.claim_received_message(
+            account_key="acc1",
+            telegram_message_id=501,
+            sender_id=9001,
+            message_text="Платёжная ссылка",
+            recipient="partner_user",
+        )
+        requests.activate_manual_conversation(
+            account_key="acc1",
+            recipient="partner_user",
+            telegram_message_id=501,
+        )
+        requests.create_manual_event(
+            account_key="acc1",
+            recipient="partner_user",
+            telegram_message_id=501,
+            incoming_text="Платёжная ссылка",
+            ai_draft="Банк не пропускает оплату",
+        )
+
+        first = self.client.get(
+            "/api/v1/manual/events",
+            headers=self.auth,
+            params={"operator_id": 101},
+        ).json()
+        second = self.client.get(
+            "/api/v1/manual/events",
+            headers=self.auth,
+            params={"operator_id": 202},
+        ).json()
+        self.assertEqual(first[0]["id"], second[0]["id"])
+        event_id = first[0]["id"]
+
+        notified = self.client.post(
+            f"/api/v1/manual/events/{event_id}/notified",
+            headers=self.auth,
+            json={"operator_id": 101},
+        )
+        self.assertEqual(notified.status_code, 200, notified.text)
+        self.assertEqual(
+            self.client.get(
+                "/api/v1/manual/events",
+                headers=self.auth,
+                params={"operator_id": 101},
+            ).json(),
+            [],
+        )
+        self.assertEqual(len(self.client.get(
+            "/api/v1/manual/events",
+            headers=self.auth,
+            params={"operator_id": 202},
+        ).json()), 1)
+
+        answer = self.client.post(
+            f"/api/v1/manual/events/{event_id}/reply",
+            headers=self.auth,
+            json={"operator_id": 101, "text": "Банк не пропускает оплату"},
+        )
+        self.assertEqual(answer.status_code, 200, answer.text)
+        self.assertEqual(len(self.sent_messages), 1)
+        duplicate = self.client.post(
+            f"/api/v1/manual/events/{event_id}/reply",
+            headers=self.auth,
+            json={"operator_id": 202, "text": "Второй ответ"},
+        )
+        self.assertEqual(duplicate.status_code, 409)
+        self.assertEqual(len(self.sent_messages), 1)
+
+        followup = self.client.post(
+            "/api/v1/manual/conversations/acc1/send",
+            headers=self.auth,
+            json={"operator_id": 202, "text": "Дополнительное сообщение"},
+        )
+        self.assertEqual(followup.status_code, 200, followup.text)
+        self.assertEqual(len(self.sent_messages), 2)
+
+        conversations = self.client.get(
+            "/api/v1/manual/conversations",
+            headers=self.auth,
+        ).json()
+        self.assertEqual(conversations[0]["open_count"], 0)
+        closed = self.client.post(
+            "/api/v1/manual/conversations/acc1/close",
+            headers=self.auth,
+            json={"operator_id": 202},
+        )
+        self.assertEqual(closed.status_code, 200, closed.text)
+        self.assertEqual(
+            self.client.get(
+                "/api/v1/manual/events",
+                headers=self.auth,
+                params={"operator_id": 303},
+            ).json(),
+            [],
+        )
+
     def test_time_scheduled_delivery_is_removed(self) -> None:
         payload = {
             "campaign_id": "partner-test",
