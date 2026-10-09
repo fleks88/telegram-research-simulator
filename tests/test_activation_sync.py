@@ -5,6 +5,7 @@ import unittest
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict, Optional
+from unittest.mock import patch
 
 from research_sim.database import Database, DatabaseRequests
 from research_sim.services.activation_sync import ActivationSyncService
@@ -45,6 +46,63 @@ class FakeMessaging:
 
 
 class ActivationSyncTest(unittest.IsolatedAsyncioTestCase):
+    async def test_fetch_uses_activation_stats_url_and_bearer_header(self) -> None:
+        captured: Dict[str, Any] = {}
+
+        class FakeResponse:
+            def raise_for_status(self) -> None:
+                return None
+
+            def json(self) -> Dict[str, Any]:
+                return {"ok": True}
+
+        class FakeHttpClient:
+            async def __aenter__(self) -> "FakeHttpClient":
+                return self
+
+            async def __aexit__(self, *args: Any) -> None:
+                return None
+
+            async def get(self, url: str, **kwargs: Any) -> FakeResponse:
+                captured["url"] = url
+                captured.update(kwargs)
+                return FakeResponse()
+
+        with tempfile.TemporaryDirectory() as directory:
+            database = Database(Path(directory) / "activation-http.sqlite3")
+            database.initialize()
+            settings = Settings(
+                database_path=Path(directory) / "activation-http.sqlite3",
+                api_token="api-token",
+                telegram_api_id=1,
+                telegram_api_hash="hash",
+                telegram_session_dir=Path(directory) / "sessions",
+                allowed_recipients={"central_user"},
+                minimum_send_interval_seconds=0,
+                pack_activation_endpoint="https://stats.example.test/activation-stats",
+                pack_activation_api_token="bearer-secret",
+            )
+            service = ActivationSyncService(
+                settings,
+                DatabaseRequests(database),
+                FakeMessaging(),
+            )
+            with patch(
+                "research_sim.services.activation_sync.httpx.AsyncClient",
+                return_value=FakeHttpClient(),
+            ):
+                await service._fetch_snapshot(None)
+
+        self.assertEqual(
+            captured["url"],
+            "https://stats.example.test/activation-stats",
+        )
+        self.assertEqual(
+            captured["headers"],
+            {"Authorization": "Bearer bearer-secret"},
+        )
+        self.assertEqual(captured["params"], {"window_hours": 24})
+
     async def test_first_snapshot_is_baseline_and_8100x10_sends_once(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             database = Database(Path(directory) / "activation.sqlite3")

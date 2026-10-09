@@ -253,9 +253,13 @@ Telegram update не обрабатывается дважды.
 
 ## Триггер по активациям пакетов
 
-URL источника задаётся в `.env` через `PACK_ACTIVATION_ENDPOINT`; опциональный
-Bearer token — через `PACK_ACTIVATION_API_TOKEN`. API опрашивает этот URL сразу
-после старта, затем каждые 5 минут. Первая успешная выборка сохраняется как
+Хост источника задаётся в `.env` через `PACK_ACTIVATION_BASE_URL`, а Bearer
+token — через `PACK_ACTIVATION_BEARER_TOKEN`. Итоговый адрес всегда имеет вид
+`<PACK_ACTIVATION_BASE_URL>/activation-stats`. В запрос автоматически
+добавляется заголовок `Authorization: Bearer <token>`. Старые переменные
+`PACK_ACTIVATION_ENDPOINT` и `PACK_ACTIVATION_API_TOKEN` поддерживаются только
+для совместимости; в старом `PACK_ACTIVATION_ENDPOINT` должен находиться полный
+URL. API опрашивает источник сразу после старта, затем каждые 5 минут. Первая успешная выборка сохраняется как
 baseline и ничего не отправляет. Далее используется `activations_since_previous_sync`;
 снимки первой и последней выборки, остатки порогов и ожидающие отправки хранятся
 в SQLite и переживают рестарт.

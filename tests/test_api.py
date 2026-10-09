@@ -99,6 +99,28 @@ class ApiTest(unittest.TestCase):
                 {"central_one", "central_two"},
             )
 
+    def test_activation_stats_environment_builds_fixed_path_and_bearer(self) -> None:
+        from unittest.mock import patch
+
+        with patch.dict(
+            "os.environ",
+            {
+                "PACK_ACTIVATION_BASE_URL": "https://stats.example.test/api/",
+                "PACK_ACTIVATION_BEARER_TOKEN": "secret-token",
+                "PACK_ACTIVATION_ENDPOINT": "https://legacy.invalid/old",
+                "PACK_ACTIVATION_API_TOKEN": "legacy-token",
+                "DATABASE_PATH": str(Path(self.temp_directory.name) / "stats.sqlite3"),
+            },
+            clear=False,
+        ):
+            settings = Settings.from_environment()
+
+        self.assertEqual(
+            settings.pack_activation_endpoint,
+            "https://stats.example.test/api/activation-stats",
+        )
+        self.assertEqual(settings.pack_activation_api_token, "secret-token")
+
     def test_send_api_enforces_allowlist(self) -> None:
         for account_key, label in (("business", "Business"), ("personal", "Personal")):
             response = self.client.post(

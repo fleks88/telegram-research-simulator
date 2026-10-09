@@ -2041,7 +2041,7 @@ async def set_activation_enabled(
             activation_status = await _api(context).activation_status()
             if not activation_status.get("endpoint_configured"):
                 await update.effective_message.reply_text(
-                    "На сервере API не задан PACK_ACTIVATION_ENDPOINT в .env."
+                    "На сервере API не задан PACK_ACTIVATION_BASE_URL в .env."
                 )
                 return
         campaign["activation_enabled"] = enabled

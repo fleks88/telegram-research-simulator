@@ -38,6 +38,24 @@ class Settings:
     @classmethod
     def from_environment(cls) -> "Settings":
         load_dotenv()
+        activation_base_url = os.environ.get("PACK_ACTIVATION_BASE_URL", "").strip()
+        legacy_activation_endpoint = os.environ.get(
+            "PACK_ACTIVATION_ENDPOINT", ""
+        ).strip()
+        normalized_activation_base = activation_base_url.rstrip("/")
+        if normalized_activation_base:
+            activation_endpoint = (
+                normalized_activation_base
+                if normalized_activation_base.endswith("/activation-stats")
+                else normalized_activation_base + "/activation-stats"
+            )
+        else:
+            activation_endpoint = legacy_activation_endpoint or None
+        activation_bearer_token = (
+            os.environ.get("PACK_ACTIVATION_BEARER_TOKEN", "").strip()
+            or os.environ.get("PACK_ACTIVATION_API_TOKEN", "").strip()
+            or None
+        )
         raw_api_id = os.environ.get("TELEGRAM_API_ID", "").strip()
         try:
             api_id = int(raw_api_id) if raw_api_id else None
@@ -83,8 +101,8 @@ class Settings:
             llm_api_key=os.environ.get("LLM_API_KEY") or None,
             llm_base_url=llm_base_url,
             llm_model=llm_model,
-            pack_activation_endpoint=os.environ.get("PACK_ACTIVATION_ENDPOINT") or None,
-            pack_activation_api_token=os.environ.get("PACK_ACTIVATION_API_TOKEN") or None,
+            pack_activation_endpoint=activation_endpoint,
+            pack_activation_api_token=activation_bearer_token,
             persona_corpus_path=Path(
                 os.environ.get("PERSONA_CORPUS_PATH", "result.json")
             ).expanduser(),
