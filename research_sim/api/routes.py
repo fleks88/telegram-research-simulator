@@ -122,6 +122,18 @@ def update_sender_account(
     return SenderAccountResponse(**account.__dict__)
 
 
+@protected_router.delete("/accounts/{account_key}")
+def delete_sender_account(account_key: str, request: Request) -> dict[str, bool]:
+    service = request.app.state.account_service
+    try:
+        deleted = service.delete(account_key)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    if not deleted:
+        raise HTTPException(status_code=404, detail="sender account not found")
+    return {"deleted": True}
+
+
 @protected_router.get(
     "/accounts/{account_key}/history",
     response_model=list[MessageHistoryItem],

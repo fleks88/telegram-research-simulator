@@ -311,6 +311,7 @@ baseline и ничего не отправляет. Далее использу�
 - `GET /health` — проверка доступности;
 - `GET /api/v1/accounts` — список зарегистрированных аккаунтов отправителя;
 - `POST /api/v1/accounts` — добавить аккаунт в реестр;
+- `DELETE /api/v1/accounts/{account_key}` — удалить аккаунт и связанные данные из БД, не удаляя файлы сессии;
 - `PATCH /api/v1/accounts/{account_key}` — включить или отключить аккаунт;
 - `GET /api/v1/accounts/{account_key}/history` — постраничная история аккаунта;
 - `GET /api/v1/accounts/{account_key}/timeline` — входящие, исходящие и очередь;

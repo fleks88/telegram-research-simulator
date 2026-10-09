@@ -729,6 +729,51 @@ class DatabaseRequests:
             )
             return cursor.rowcount == 1
 
+    def delete_sender_account(self, account_key: str) -> bool:
+        """Remove an account and its account-scoped data, but not session files."""
+        with self.database.connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            exists = connection.execute(
+                "SELECT 1 FROM telegram_accounts WHERE account_key = ?",
+                (account_key,),
+            ).fetchone()
+            if exists is None:
+                return False
+            connection.execute(
+                """DELETE FROM manual_event_notifications
+                   WHERE event_id IN (
+                       SELECT id FROM manual_events WHERE account_key = ?
+                   )""",
+                (account_key,),
+            )
+            for table in (
+                "manual_events",
+                "manual_conversations",
+                "pending_auto_replies",
+                "received_messages",
+                "pending_term_questions",
+                "dialogue_proposals",
+                "sender_personas",
+            ):
+                connection.execute(
+                    f"DELETE FROM {table} WHERE account_key = ?",
+                    (account_key,),
+                )
+            connection.execute(
+                "DELETE FROM message_deliveries WHERE sender_account = ?",
+                (account_key,),
+            )
+            connection.execute(
+                """UPDATE account_rotation SET last_account_key = NULL
+                   WHERE last_account_key = ?""",
+                (account_key,),
+            )
+            connection.execute(
+                "DELETE FROM telegram_accounts WHERE account_key = ?",
+                (account_key,),
+            )
+            return True
+
     def reserve_next_sender_account(
         self,
         *,

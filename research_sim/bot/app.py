@@ -302,7 +302,7 @@ async def show_accounts(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         )
         return
     lines = ["Аккаунты отправителя:"]
-    buttons = []
+    account_buttons = []
     for account in accounts:
         state = "включён" if account["enabled"] else "выключен"
         last_used = (
@@ -315,15 +315,18 @@ async def show_accounts(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
             f"{state} · отправок: {account['send_count']} · {last_used}"
         )
         action = "disable" if account["enabled"] else "enable"
-        buttons.append(
+        account_buttons.append([
             InlineKeyboardButton(
                 f"{account['account_index']}: {state}",
                 callback_data=f"account:{action}:{account['account_key']}",
-            )
-        )
+            ),
+            InlineKeyboardButton(
+                "🗑 Удалить",
+                callback_data=f"account:delete:{account['account_key']}",
+            ),
+        ])
     markup = InlineKeyboardMarkup(
-        [buttons[index : index + 2] for index in range(0, len(buttons), 2)]
-        + [
+        account_buttons + [
             [InlineKeyboardButton("➕ Добавить .session", callback_data="flow:add_account")],
             [InlineKeyboardButton("← Главное меню", callback_data="menu:home")],
         ]
@@ -825,6 +828,40 @@ async def menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         await show_account_history(update, context, value.split(":", 1)[1])
     elif value.startswith("account:"):
         _, action, account_key = value.split(":", 2)
+        if action == "delete":
+            await _reply(
+                update,
+                f"Удалить аккаунт {account_key} из базы?\n\n"
+                "Будут удалены его личность, история, очереди, preview и ручной "
+                "диалог. Файлы .session/.json останутся на сервере.",
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton(
+                        "Да, удалить из БД",
+                        callback_data=f"account:del:{account_key}",
+                    )],
+                    [InlineKeyboardButton(
+                        "Отмена",
+                        callback_data="menu:accounts",
+                    )],
+                ]),
+            )
+            return
+        if action == "del":
+            try:
+                await _api(context).delete_account(account_key)
+                await _reply(
+                    update,
+                    f"Аккаунт {account_key} удалён из БД. Файлы сессии сохранены.",
+                    reply_markup=InlineKeyboardMarkup([
+                        [InlineKeyboardButton(
+                            "← К аккаунтам",
+                            callback_data="menu:accounts",
+                        )],
+                    ]),
+                )
+            except Exception as exc:
+                await _reply(update, f"Ошибка удаления аккаунта: {exc}")
+            return
         try:
             account = await _api(context).set_account_enabled(
                 account_key,

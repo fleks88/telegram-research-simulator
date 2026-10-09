@@ -301,6 +301,59 @@ class ApiTest(unittest.TestCase):
         listed = self.client.get("/api/v1/accounts", headers=self.auth)
         self.assertEqual(listed.json()[0]["account_key"], "business")
 
+    def test_account_can_be_deleted_with_its_database_data(self) -> None:
+        added = self.client.post(
+            "/api/v1/accounts",
+            headers=self.auth,
+            json={"account_key": "business", "label": "Business account"},
+        )
+        self.assertEqual(added.status_code, 201)
+        requests = self.app.state.database_requests
+        requests.save_dialogue_proposal(
+            account_key="business",
+            prompt="test",
+            dialogue=[{"speaker": "account", "text": "hello"}],
+        )
+        requests.activate_manual_conversation(
+            account_key="business",
+            recipient="partner_user",
+            telegram_message_id=10,
+        )
+        requests.create_manual_event(
+            account_key="business",
+            recipient="partner_user",
+            telegram_message_id=10,
+            incoming_text="pay here",
+            ai_draft="failed",
+        )
+
+        deleted = self.client.delete(
+            "/api/v1/accounts/business",
+            headers=self.auth,
+        )
+
+        self.assertEqual(deleted.status_code, 200)
+        self.assertEqual(deleted.json(), {"deleted": True})
+        self.assertEqual(
+            self.client.get("/api/v1/accounts", headers=self.auth).json(),
+            [],
+        )
+        with self.app.state.database.connect() as connection:
+            for table in (
+                "sender_personas", "dialogue_proposals", "manual_conversations",
+                "manual_events",
+            ):
+                count = connection.execute(
+                    f"SELECT COUNT(*) FROM {table} WHERE account_key = 'business'"
+                ).fetchone()[0]
+                self.assertEqual(count, 0, table)
+
+        missing = self.client.delete(
+            "/api/v1/accounts/business",
+            headers=self.auth,
+        )
+        self.assertEqual(missing.status_code, 404)
+
     def test_persona_profile_is_saved_per_account(self) -> None:
         self.client.post(
             "/api/v1/accounts",

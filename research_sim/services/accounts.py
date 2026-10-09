@@ -39,3 +39,8 @@ class SenderAccountService:
         if not ACCOUNT_KEY_PATTERN.fullmatch(account_key):
             raise ValueError("invalid account_key")
         return self.requests.set_sender_account_enabled(account_key, enabled)
+
+    def delete(self, account_key: str) -> bool:
+        if not ACCOUNT_KEY_PATTERN.fullmatch(account_key):
+            raise ValueError("invalid account_key")
+        return self.requests.delete_sender_account(account_key)

@@ -49,6 +49,9 @@ class ApiClient:
             json={"enabled": enabled},
         )
 
+    async def delete_account(self, account_key: str) -> Dict[str, Any]:
+        return await self.request("DELETE", "/api/v1/accounts/" + account_key)
+
     async def account_persona(self, account_key: str) -> Dict[str, Any]:
         return await self.request("GET", "/api/v1/accounts/" + account_key + "/persona")
 
