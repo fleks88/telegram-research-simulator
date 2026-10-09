@@ -32,7 +32,7 @@ def make_snapshot(as_of: datetime, delta_8100: int = 0) -> Dict[str, Any]:
 
 class FakeMessaging:
     def __init__(self) -> None:
-        self.sent: list[tuple[str, str, bool]] = []
+        self.sent: list[tuple[str, str, bool, Optional[int]]] = []
 
     async def send_message(
         self,
@@ -40,8 +40,9 @@ class FakeMessaging:
         text: str,
         *,
         apply_persona: bool = False,
+        required_offer_uc: Optional[int] = None,
     ) -> Any:
-        self.sent.append((recipient, text, apply_persona))
+        self.sent.append((recipient, text, apply_persona, required_offer_uc))
         return type("SendResult", (), {"sender_account": "business"})()
 
 
@@ -115,7 +116,7 @@ class ActivationSyncTest(unittest.IsolatedAsyncioTestCase):
                     "activation_enabled": True,
                     "activation_rules": {"8100": 10},
                     "recipient": "central_user",
-                    "phrases": ["Pack {pack}: threshold {activations}"],
+                    "phrases": ["Хочу купить {offer_uc} UC"],
                     "start_date": "2026-10-01",
                     "day_slots": {"1": ["10:00"]},
                 }
@@ -157,10 +158,13 @@ class ActivationSyncTest(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(triggered["status"], "sent")
             self.assertEqual(triggered["pack_size"], 8100)
             self.assertEqual(triggered["threshold"], 81000)
-            self.assertEqual(
-                messaging.sent,
-                [("central_user", "Pack 8100: threshold 81000", True)],
-            )
+            self.assertIn(triggered["offer_uc"], {1850, 3800, 8100})
+            self.assertEqual(messaging.sent, [(
+                "central_user",
+                f"Хочу купить {triggered['offer_uc']} UC",
+                True,
+                triggered["offer_uc"],
+            )])
 
             no_repeat = await service.sync_once(
                 now=(first_at + timedelta(minutes=10)).timestamp()
@@ -175,6 +179,39 @@ class ActivationSyncTest(unittest.IsolatedAsyncioTestCase):
                 (first_at + timedelta(minutes=10)).isoformat(),
             )
             self.assertEqual(state["remainders"]["8100x10"], 0)
+
+    async def test_legacy_activation_template_never_leaks_internal_threshold(self) -> None:
+        messaging = FakeMessaging()
+        service = object.__new__(ActivationSyncService)
+        service.messaging = messaging
+
+        class Requests:
+            def save_activation_sync_state(self, state: Dict[str, Any]) -> None:
+                return None
+
+        service.requests = Requests()
+        state = {
+            "pending": [{
+                "pack_size": 3650,
+                "multiplier": 4,
+                "threshold": 14600,
+                "as_of": "2026-10-05T12:00:00+00:00",
+                "occurrence": 1,
+            }],
+        }
+        config = {
+            "recipient": "central_user",
+            "phrases": ["Пак {pack}: порог {activations}"],
+            "start_date": "2026-10-01",
+        }
+
+        result = await service._send_next_pending(config, state)
+
+        sent_text = messaging.sent[0][1]
+        self.assertIn(result["offer_uc"], {1850, 3800, 8100})
+        self.assertIn(str(result["offer_uc"]), sent_text)
+        self.assertNotIn("3650", sent_text)
+        self.assertNotIn("14600", sent_text)
 
 
 if __name__ == "__main__":

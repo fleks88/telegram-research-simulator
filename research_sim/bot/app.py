@@ -1601,7 +1601,9 @@ async def _ask_campaign_phrases(
 ) -> int:
     await update.effective_message.reply_text(
         "Введите шаблоны сообщений по активациям, по одному на строку (до 100). "
-        "Можно использовать {date}, {day}, {slot}, {pack}, {activations}.",
+        "Для суммы покупки используйте {offer_uc}: она случайно выбирается из "
+        "1850, 3800 и 8100 UC. Также доступны служебные поля {date}, {day}, "
+        "{slot}, {pack}, {activations}.",
         reply_markup=InlineKeyboardMarkup([
             [InlineKeyboardButton("Отмена", callback_data="flow:cancel")]
         ]),

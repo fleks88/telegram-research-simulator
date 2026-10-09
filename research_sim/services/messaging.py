@@ -76,9 +76,11 @@ class MessagingService:
         sender_account_index: Optional[int] = None,
         photo: Optional[bytes] = None,
         apply_persona: bool = False,
+        required_offer_uc: Optional[int] = None,
     ) -> SendResult:
         normalized_recipient = self.validate_recipient(recipient)
         message = text.strip()
+        source_message = message
         if not message:
             raise ValueError("message must not be empty")
         if len(message) > 4096:
@@ -106,7 +108,11 @@ class MessagingService:
         delivery_id = reservation.delivery_id
         try:
             if sender_account_index is None:
-                account_reservation = self.requests.reserve_next_sender_account()
+                account_reservation = self.requests.reserve_next_sender_account(
+                    excluded_manual_recipient=(
+                        normalized_recipient if required_offer_uc is not None else None
+                    )
+                )
             else:
                 account_reservation = self.requests.reserve_sender_account_by_index(
                     sender_account_index
@@ -135,6 +141,8 @@ class MessagingService:
                             sender_account.account_key, limit=12, recipient=normalized_recipient,
                         ),
                     )
+                    if required_offer_uc is not None and str(required_offer_uc) not in message:
+                        message = source_message
                 message = self.personas.stylize_scheduled_text(
                     sender_account.account_key,
                     message,

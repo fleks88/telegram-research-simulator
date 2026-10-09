@@ -37,7 +37,9 @@ class CampaignService:
         config["day_slots"] = {}
         if not config["phrases"] or any(not phrase.strip() for phrase in config["phrases"]):
             raise ValueError("phrases must contain non-empty strings")
-        allowed_template_fields = {"date", "day", "slot", "pack", "activations"}
+        allowed_template_fields = {
+            "date", "day", "slot", "pack", "activations", "offer_uc",
+        }
         for phrase in config["phrases"]:
             try:
                 fields = {
@@ -49,7 +51,8 @@ class CampaignService:
                 raise ValueError("phrase template has invalid format syntax") from exc
             if not fields <= allowed_template_fields:
                 raise ValueError(
-                    "templates support only {date}, {day}, {slot}, {pack}, and {activations}"
+                    "templates support only {date}, {day}, {slot}, {pack}, "
+                    "{activations}, and {offer_uc}"
                 )
         config.setdefault("auto_reply_enabled", False)
         config["reply_prompt"] = shared_prompt(config.get("reply_prompt"))

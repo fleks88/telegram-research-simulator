@@ -729,8 +729,11 @@ class DatabaseRequests:
             )
             return cursor.rowcount == 1
 
-    def reserve_next_sender_account(self) -> SenderAccountReservation:
-        now = time.time()
+    def reserve_next_sender_account(
+        self,
+        *,
+        excluded_manual_recipient: Optional[str] = None,
+    ) -> SenderAccountReservation:
         with self.database.connect() as connection:
             connection.execute("BEGIN IMMEDIATE")
             rotation = connection.execute(
@@ -744,14 +747,29 @@ class DatabaseRequests:
                        FROM telegram_accounts
                               WHERE enabled = 1 AND id > (
                                     SELECT id FROM telegram_accounts WHERE account_key = ?
+                              ) AND (
+                                  ? IS NULL OR NOT EXISTS (
+                                      SELECT 1 FROM manual_conversations
+                                      WHERE manual_conversations.account_key = telegram_accounts.account_key
+                                        AND manual_conversations.recipient = ?
+                                        AND manual_conversations.active = 1
+                                  )
                               ) ORDER BY id LIMIT 1""",
-                    (last_key,),
+                    (last_key, excluded_manual_recipient, excluded_manual_recipient),
                 ).fetchone()
             if row is None:
                 row = connection.execute(
                           """SELECT id, account_key, label, enabled, send_count, last_used_at
                        FROM telegram_accounts
-                              WHERE enabled = 1 ORDER BY id LIMIT 1"""
+                              WHERE enabled = 1 AND (
+                                  ? IS NULL OR NOT EXISTS (
+                                      SELECT 1 FROM manual_conversations
+                                      WHERE manual_conversations.account_key = telegram_accounts.account_key
+                                        AND manual_conversations.recipient = ?
+                                        AND manual_conversations.active = 1
+                                  )
+                              ) ORDER BY id LIMIT 1""",
+                    (excluded_manual_recipient, excluded_manual_recipient),
                 ).fetchone()
             if row is None:
                 return SenderAccountReservation(None, "not_found")

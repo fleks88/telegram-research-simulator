@@ -64,6 +64,19 @@ class SharedPromptTest(unittest.IsolatedAsyncioTestCase):
                 self.assertNotIn(ACTIVATION_INSTRUCTION, reply_prompt)
             self.assertEqual(campaign.get_settings()["reply_prompt"], custom)
 
+            # The model must not silently replace the amount selected by the
+            # activation trigger. Fall back to the source offer if it does.
+            responder.rewrite_for_persona.return_value = "Хочу купить 1800 UC"
+            result = await messaging.send_message(
+                "seller",
+                "Хочу купить 1850 UC",
+                sender_account_index=1,
+                apply_persona=True,
+                required_offer_uc=1850,
+            )
+            self.assertIn("1850", result.text)
+            self.assertNotIn("1800", result.text)
+
     async def test_editor_shows_full_current_prompt_and_saves_replacement(self) -> None:
         current = "Текущий промпт " + "а" * 3900
         query = SimpleNamespace(answer=AsyncMock(), edit_message_text=AsyncMock())
@@ -80,6 +93,40 @@ class SharedPromptTest(unittest.IsolatedAsyncioTestCase):
             message.reply_text.assert_awaited_with(current)
             await edit_reply_prompt_entered(update, None)
             self.assertEqual(api.save_campaign.call_args.args[0]["reply_prompt"], message.text)
+
+    async def test_activation_skips_account_already_in_manual_mode(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "manual-rotation.sqlite3"
+            database = Database(path)
+            database.initialize()
+            requests = DatabaseRequests(database)
+            requests.add_sender_account("manual-buyer", "Manual")
+            requests.add_sender_account("available-buyer", "Available")
+            requests.activate_manual_conversation(
+                account_key="manual-buyer",
+                recipient="seller",
+                telegram_message_id=100,
+            )
+            requests.save_campaign_settings({
+                "recipient": "seller",
+                "reply_prompt": DEFAULT_REPLY_PROMPT,
+            })
+            settings = Settings(
+                database_path=path, api_token="test", telegram_api_id=123,
+                telegram_api_hash="hash", telegram_session_dir=Path(directory),
+                allowed_recipients={"seller"}, minimum_send_interval_seconds=0,
+            )
+            sender = SimpleNamespace(send_message=AsyncMock())
+            messaging = MessagingService(settings, requests, sender)
+
+            result = await messaging.send_message(
+                "seller",
+                "Хочу купить 3800 UC",
+                apply_persona=True,
+                required_offer_uc=3800,
+            )
+
+            self.assertEqual(result.sender_account, "available-buyer")
 
     async def test_editor_can_restore_default(self) -> None:
         query = SimpleNamespace(answer=AsyncMock(), edit_message_text=AsyncMock())
