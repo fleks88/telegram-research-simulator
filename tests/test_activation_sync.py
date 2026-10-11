@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import tempfile
 import unittest
+from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict, Optional
@@ -47,7 +48,7 @@ class FakeMessaging:
 
 
 class ActivationSyncTest(unittest.IsolatedAsyncioTestCase):
-    async def test_fetch_uses_activation_stats_url_and_bearer_header(self) -> None:
+    async def test_fetch_prefers_x_api_key_and_keeps_bearer_fallback(self) -> None:
         captured: Dict[str, Any] = {}
 
         class FakeResponse:
@@ -82,6 +83,7 @@ class ActivationSyncTest(unittest.IsolatedAsyncioTestCase):
                 minimum_send_interval_seconds=0,
                 pack_activation_endpoint="https://stats.example.test/activation-stats",
                 pack_activation_api_token="bearer-secret",
+                pack_activation_x_api_key="x-secret",
             )
             service = ActivationSyncService(
                 settings,
@@ -94,12 +96,26 @@ class ActivationSyncTest(unittest.IsolatedAsyncioTestCase):
             ):
                 await service._fetch_snapshot(None)
 
+                x_api_key_headers = captured["headers"]
+                captured.clear()
+                bearer_service = ActivationSyncService(
+                    replace(settings, pack_activation_x_api_key=None),
+                    DatabaseRequests(database),
+                    FakeMessaging(),
+                )
+                await bearer_service._fetch_snapshot(None)
+                bearer_headers = captured["headers"]
+
         self.assertEqual(
             captured["url"],
             "https://stats.example.test/activation-stats",
         )
         self.assertEqual(
-            captured["headers"],
+            x_api_key_headers,
+            {"X-API-Key": "x-secret"},
+        )
+        self.assertEqual(
+            bearer_headers,
             {"Authorization": "Bearer bearer-secret"},
         )
         self.assertEqual(captured["params"], {"window_hours": 24})

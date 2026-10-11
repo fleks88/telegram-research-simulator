@@ -99,13 +99,14 @@ class ApiTest(unittest.TestCase):
                 {"central_one", "central_two"},
             )
 
-    def test_activation_stats_environment_builds_fixed_path_and_bearer(self) -> None:
+    def test_activation_stats_environment_builds_fixed_path_and_auth(self) -> None:
         from unittest.mock import patch
 
         with patch.dict(
             "os.environ",
             {
                 "PACK_ACTIVATION_BASE_URL": "https://stats.example.test/api/",
+                "PACK_ACTIVATION_X_API_KEY": "x-secret",
                 "PACK_ACTIVATION_BEARER_TOKEN": "secret-token",
                 "PACK_ACTIVATION_ENDPOINT": "https://legacy.invalid/old",
                 "PACK_ACTIVATION_API_TOKEN": "legacy-token",
@@ -120,6 +121,7 @@ class ApiTest(unittest.TestCase):
             "https://stats.example.test/api/activation-stats",
         )
         self.assertEqual(settings.pack_activation_api_token, "secret-token")
+        self.assertEqual(settings.pack_activation_x_api_key, "x-secret")
 
     def test_send_api_enforces_allowlist(self) -> None:
         for account_key, label in (("business", "Business"), ("personal", "Personal")):

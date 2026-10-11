@@ -33,6 +33,7 @@ class Settings:
     llm_model: str = "gpt-4o-mini"
     pack_activation_endpoint: Optional[str] = None
     pack_activation_api_token: Optional[str] = None
+    pack_activation_x_api_key: Optional[str] = None
     persona_corpus_path: Path = Path("result.json")
 
     @classmethod
@@ -55,6 +56,9 @@ class Settings:
             os.environ.get("PACK_ACTIVATION_BEARER_TOKEN", "").strip()
             or os.environ.get("PACK_ACTIVATION_API_TOKEN", "").strip()
             or None
+        )
+        activation_x_api_key = (
+            os.environ.get("PACK_ACTIVATION_X_API_KEY", "").strip() or None
         )
         raw_api_id = os.environ.get("TELEGRAM_API_ID", "").strip()
         try:
@@ -103,6 +107,7 @@ class Settings:
             llm_model=llm_model,
             pack_activation_endpoint=activation_endpoint,
             pack_activation_api_token=activation_bearer_token,
+            pack_activation_x_api_key=activation_x_api_key,
             persona_corpus_path=Path(
                 os.environ.get("PERSONA_CORPUS_PATH", "result.json")
             ).expanduser(),

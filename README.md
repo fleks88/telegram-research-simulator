@@ -255,10 +255,12 @@ Telegram update не обрабатывается дважды.
 
 ## Триггер по активациям пакетов
 
-Хост источника задаётся в `.env` через `PACK_ACTIVATION_BASE_URL`, а Bearer
-token — через `PACK_ACTIVATION_BEARER_TOKEN`. Итоговый адрес всегда имеет вид
+Хост источника задаётся в `.env` через `PACK_ACTIVATION_BASE_URL`, а ключ
+`x-api-key` — через `PACK_ACTIVATION_X_API_KEY`. Итоговый адрес всегда имеет вид
 `<PACK_ACTIVATION_BASE_URL>/activation-stats`. В запрос автоматически
-добавляется заголовок `Authorization: Bearer <token>`. Старые переменные
+добавляется заголовок `X-API-Key: <key>`. Альтернативно поддерживается Bearer
+через `PACK_ACTIVATION_BEARER_TOKEN`; если заданы оба значения, используется
+`PACK_ACTIVATION_X_API_KEY`. Старые переменные
 `PACK_ACTIVATION_ENDPOINT` и `PACK_ACTIVATION_API_TOKEN` поддерживаются только
 для совместимости; в старом `PACK_ACTIVATION_ENDPOINT` должен находиться полный
 URL. API опрашивает источник сразу после старта, затем каждые 5 минут. Первая успешная выборка сохраняется как

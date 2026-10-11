@@ -122,7 +122,9 @@ class ActivationSyncService:
             return await self.fetcher(params=params)
 
         headers: Dict[str, str] = {}
-        if self.settings.pack_activation_api_token:
+        if self.settings.pack_activation_x_api_key:
+            headers["X-API-Key"] = self.settings.pack_activation_x_api_key
+        elif self.settings.pack_activation_api_token:
             headers["Authorization"] = "Bearer " + self.settings.pack_activation_api_token
         async with httpx.AsyncClient(timeout=30) as client:
             response = await client.get(
