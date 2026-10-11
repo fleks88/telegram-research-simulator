@@ -43,8 +43,8 @@ class ControlBotHelpersTest(unittest.TestCase):
             "pending": 1,
         })
 
-        self.assertIn("8100 UC: 12345 / 2", text)
-        self.assertIn("3650 UC: 678 / 0", text)
+        self.assertIn("8100 UC: 12345 (+0) / 2", text)
+        self.assertIn("3650 UC: 678 (+0) / 0", text)
         self.assertIn("Очередь: 1", text)
         self.assertIn("12.10.2026 10:00 МСК", text)
 

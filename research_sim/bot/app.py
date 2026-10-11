@@ -193,15 +193,23 @@ def format_activation_home(data: Dict[str, Any]) -> str:
         and isinstance(item.get("pack_size"), int)
         and isinstance(item.get("activations_24h"), int)
     }
+    deltas = {
+        int(item["pack_size"]): int(item["activations_since_previous_sync"])
+        for item in last_response.get("packs", [])
+        if isinstance(item, dict)
+        and isinstance(item.get("pack_size"), int)
+        and isinstance(item.get("activations_since_previous_sync"), int)
+    }
     trigger_counts = data.get("trigger_counts") or {}
     lines = [
         f"⚡ Активации: {'включены' if enabled else 'выключены'}",
-        "Активации за 24 часа / срабатывания триггера:",
+        "За 24ч (+с прошлого опроса) / срабатывания:",
     ]
     for pack_size in sorted(PACK_SIZES, reverse=True):
         activation_count = str(packs[pack_size]) if pack_size in packs else "—"
+        delta = deltas.get(pack_size, 0)
         triggered = int(trigger_counts.get(str(pack_size), 0))
-        lines.append(f"• {pack_size} UC: {activation_count} / {triggered}")
+        lines.append(f"• {pack_size} UC: {activation_count} (+{delta}) / {triggered}")
     lines.append(f"Очередь: {int(data.get('pending', 0))}")
     if data.get("last_sync_at") is not None:
         lines.append(f"Обновлено: {format_moscow_time(float(data['last_sync_at']))}")
@@ -1591,6 +1599,8 @@ async def edit_activation_rules_start(
     await query.answer()
     await query.edit_message_text(
         "Введите правила, например:\n8100x10,3650x4,1800x0,660x0,325x0,60x0\n"
+        "Число после x — количество активаций на одно сообщение. "
+        "Например, 60x1 срабатывает на каждую активацию пакета 60. "
         "Ноль отключает пакет."
     )
     return EDIT_ACTIVATION_RULES
@@ -2075,9 +2085,10 @@ async def activation_rules_command(update: Update, context: ContextTypes.DEFAULT
     raw_rules = " ".join(context.args).strip()
     if not raw_rules:
         await update.effective_message.reply_text(
-            "Задайте множители для пакетов: "
+            "Задайте количество активаций на одно сообщение: "
             "8100x10,3650x0,1800x5,660x0,325x0,60x0\n"
-            "Ноль означает выключенный пакет. Порог сообщения = размер пакета × множитель."
+            "Например, 8100x10 — сообщение после каждых 10 активаций пакета 8100. "
+            "Ноль означает выключенный пакет."
         )
         return
     try:
@@ -2093,7 +2104,7 @@ async def activation_rules_command(update: Update, context: ContextTypes.DEFAULT
         return
     lines = ["Правила сохранены; отправка пока не включалась:"]
     lines.extend(
-        f"Пакет {pack_size} × {multiplier} = {int(pack_size) * multiplier} активаций/сообщение"
+        f"Пакет {pack_size}: каждые {multiplier} активаций — одно сообщение"
         for pack_size, multiplier in rules.items()
     )
     await update.effective_message.reply_text("\n".join(lines))
@@ -2168,7 +2179,7 @@ async def activation_status_command(update: Update, context: ContextTypes.DEFAUL
         )
     if status_data.get("rules"):
         lines.append("Правила: " + ", ".join(
-            f"{pack}x{multiplier} (порог {int(pack) * multiplier})"
+            f"{pack}x{multiplier} (порог {multiplier})"
             for pack, multiplier in status_data["rules"].items()
         ))
     await update.effective_message.reply_text("\n".join(lines))

@@ -135,7 +135,7 @@ class ActivationSyncTest(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(captured["params"], {"window_hours": 24})
 
-    async def test_first_snapshot_is_baseline_and_8100x10_sends_once(self) -> None:
+    async def test_first_snapshot_is_baseline_and_8100x10_sends_after_ten(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             database = Database(Path(directory) / "activation.sqlite3")
             database.initialize()
@@ -165,7 +165,7 @@ class ActivationSyncTest(unittest.IsolatedAsyncioTestCase):
             first_at = datetime(2026, 10, 4, 9, 0, tzinfo=timezone.utc)
             snapshots = [
                 make_snapshot(first_at, delta_8100=500_000),
-                make_snapshot(first_at + timedelta(minutes=5), delta_8100=81_000),
+                make_snapshot(first_at + timedelta(minutes=5), delta_8100=10),
                 make_snapshot(first_at + timedelta(minutes=10), delta_8100=0),
             ]
 
@@ -188,7 +188,7 @@ class ActivationSyncTest(unittest.IsolatedAsyncioTestCase):
             )
             self.assertEqual(triggered["status"], "sent")
             self.assertEqual(triggered["pack_size"], 8100)
-            self.assertEqual(triggered["threshold"], 81000)
+            self.assertEqual(triggered["threshold"], 10)
             self.assertIn(triggered["offer_uc"], {1850, 3800, 8100})
             self.assertEqual(messaging.sent, [(
                 "central_user",

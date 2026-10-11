@@ -87,6 +87,7 @@ class ActivationSyncService:
             "remainders": {},
             "pending": [],
             "trigger_counts": {},
+            "rule_semantics_version": 2,
         }
 
         polled = False
@@ -95,6 +96,11 @@ class ActivationSyncService:
             response = await self._fetch_snapshot(state.get("last_sync_at"))
             self._validate_snapshot(response)
             polled = True
+            if state.get("rule_semantics_version") != 2:
+                # Version 1 incorrectly multiplied the number of activations by
+                # the UC pack size. Its accumulated remainders are incompatible.
+                state["remainders"] = {}
+                state["rule_semantics_version"] = 2
             if state["first_response"] is None:
                 state["first_response"] = response
             else:
@@ -214,7 +220,7 @@ class ActivationSyncService:
         queued_count = 0
         for pack_size, multiplier in rules.items():
             rule_key = f"{pack_size}x{multiplier}"
-            threshold = pack_size * multiplier
+            threshold = multiplier
             accumulated = int(remainders.get(rule_key, 0)) + int(deltas.get(pack_size, 0))
             crossed = min(accumulated // threshold, MAX_QUEUED_MESSAGES_PER_SYNC - queued_count)
             for occurrence in range(crossed):
