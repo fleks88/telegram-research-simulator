@@ -52,6 +52,9 @@ class ActivationSyncTest(unittest.IsolatedAsyncioTestCase):
         captured: Dict[str, Any] = {}
 
         class FakeResponse:
+            status_code = 200
+            text = ""
+
             def raise_for_status(self) -> None:
                 return None
 
@@ -195,6 +198,63 @@ class ActivationSyncTest(unittest.IsolatedAsyncioTestCase):
                 (first_at + timedelta(minutes=10)).isoformat(),
             )
             self.assertEqual(state["remainders"]["8100x10"], 0)
+
+    async def test_fetch_retries_without_since_when_endpoint_rejects_it(self) -> None:
+        calls: list[Dict[str, Any]] = []
+
+        class FakeResponse:
+            def __init__(self, status_code: int) -> None:
+                self.status_code = status_code
+                self.text = '{"error":"unknown query parameter since"}'
+
+            def raise_for_status(self) -> None:
+                if self.status_code >= 400:
+                    raise AssertionError("the 400 response should have been retried")
+
+            def json(self) -> Dict[str, Any]:
+                return {"ok": True}
+
+        class FakeHttpClient:
+            async def __aenter__(self) -> "FakeHttpClient":
+                return self
+
+            async def __aexit__(self, *args: Any) -> None:
+                return None
+
+            async def get(self, url: str, **kwargs: Any) -> FakeResponse:
+                calls.append(kwargs["params"].copy())
+                return FakeResponse(400 if "since" in kwargs["params"] else 200)
+
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "activation-since.sqlite3"
+            database = Database(path)
+            database.initialize()
+            settings = Settings(
+                database_path=path,
+                api_token="api-token",
+                telegram_api_id=1,
+                telegram_api_hash="hash",
+                telegram_session_dir=Path(directory) / "sessions",
+                allowed_recipients={"central_user"},
+                minimum_send_interval_seconds=0,
+                pack_activation_endpoint="http://stats.test/activation-stats",
+                pack_activation_x_api_key="x-secret",
+            )
+            service = ActivationSyncService(
+                settings,
+                DatabaseRequests(database),
+                FakeMessaging(),
+            )
+            with patch(
+                "research_sim.services.activation_sync.httpx.AsyncClient",
+                return_value=FakeHttpClient(),
+            ):
+                await service._fetch_snapshot(1_760_169_279.619)
+                await service._fetch_snapshot(1_760_169_579.619)
+
+        self.assertIn("since", calls[0])
+        self.assertEqual(calls[1], {"window_hours": 24})
+        self.assertEqual(calls[2], {"window_hours": 24})
 
     async def test_legacy_activation_template_never_leaks_internal_threshold(self) -> None:
         messaging = FakeMessaging()

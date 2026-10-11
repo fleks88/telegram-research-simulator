@@ -43,6 +43,7 @@ class ActivationSyncService:
         self.messaging = messaging
         self.fetcher = fetcher
         self._task: Optional[asyncio.Task[None]] = None
+        self._send_since_parameter = True
 
     async def start(self) -> None:
         if self._task is None:
@@ -116,7 +117,7 @@ class ActivationSyncService:
 
     async def _fetch_snapshot(self, since: Optional[float]) -> Dict[str, Any]:
         params: Dict[str, Any] = {"window_hours": 24}
-        if since is not None:
+        if since is not None and self._send_since_parameter:
             params["since"] = datetime.fromtimestamp(float(since), timezone.utc).isoformat()
         if self.fetcher is not None:
             return await self.fetcher(params=params)
@@ -132,6 +133,19 @@ class ActivationSyncService:
                 params=params,
                 headers=headers,
             )
+            if response.status_code == 400 and "since" in params:
+                LOGGER.warning(
+                    "Activation endpoint rejected the since parameter; "
+                    "retrying without it: %s",
+                    response.text[:500],
+                )
+                self._send_since_parameter = False
+                params.pop("since")
+                response = await client.get(
+                    self.settings.pack_activation_endpoint or "",
+                    params=params,
+                    headers=headers,
+                )
             response.raise_for_status()
             return response.json()
 
