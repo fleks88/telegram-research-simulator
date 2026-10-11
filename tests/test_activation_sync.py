@@ -269,6 +269,43 @@ class ActivationSyncTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(calls[1], {"window_hours": 24})
         self.assertEqual(calls[2], {"window_hours": 24})
 
+    def test_zero_api_delta_falls_back_to_positive_rolling_growth(self) -> None:
+        previous = make_snapshot(
+            datetime(2026, 10, 11, 22, 27, tzinfo=timezone.utc)
+        )
+        current = make_snapshot(
+            datetime(2026, 10, 11, 22, 32, tzinfo=timezone.utc)
+        )
+        for item in current["packs"]:
+            if item["pack_size"] in {8100, 60}:
+                item["activations_24h"] += 3
+
+        with self.assertLogs(
+            "research_sim.services.activation_sync",
+            level="WARNING",
+        ) as captured:
+            ActivationSyncService._fill_zero_deltas_from_rolling_growth(
+                previous,
+                current,
+            )
+
+        by_pack = {item["pack_size"]: item for item in current["packs"]}
+        self.assertEqual(by_pack[8100]["activations_since_previous_sync"], 3)
+        self.assertEqual(by_pack[60]["activations_since_previous_sync"], 3)
+        self.assertEqual(by_pack[3650]["activations_since_previous_sync"], 0)
+        self.assertEqual(by_pack[60]["reported_activations_since_previous_sync"], 0)
+        self.assertIn("8100", captured.output[0])
+        self.assertIn("60", captured.output[0])
+
+        state: Dict[str, Any] = {"remainders": {}, "pending": []}
+        ActivationSyncService._apply_deltas(
+            state,
+            {"activation_rules": {"60": 1}},
+            current,
+        )
+        self.assertEqual(len(state["pending"]), 3)
+        self.assertEqual(state["trigger_counts"], {"60": 3})
+
     async def test_legacy_activation_template_never_leaks_internal_threshold(self) -> None:
         messaging = FakeMessaging()
         service = object.__new__(ActivationSyncService)

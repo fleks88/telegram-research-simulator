@@ -104,6 +104,10 @@ class ActivationSyncService:
             if state["first_response"] is None:
                 state["first_response"] = response
             else:
+                self._fill_zero_deltas_from_rolling_growth(
+                    state.get("last_response") or {},
+                    response,
+                )
                 self._apply_deltas(state, config, response)
             state["last_response"] = response
             state["last_sync_at"] = self._parse_timestamp(response["as_of"])
@@ -199,6 +203,37 @@ class ActivationSyncService:
                     raise ValueError(f"{key} must be a non-negative integer")
         if seen != SUPPORTED_PACK_SIZES:
             raise ValueError("activation endpoint must return all six supported pack sizes")
+
+    @staticmethod
+    def _fill_zero_deltas_from_rolling_growth(
+        previous: Dict[str, Any],
+        current: Dict[str, Any],
+    ) -> None:
+        previous_totals = {
+            item["pack_size"]: item["activations_24h"]
+            for item in previous.get("packs", [])
+            if isinstance(item, dict)
+        }
+        corrections: Dict[int, int] = {}
+        for item in current.get("packs", []):
+            pack_size = item["pack_size"]
+            if item["activations_since_previous_sync"] != 0:
+                continue
+            previous_total = previous_totals.get(pack_size)
+            if previous_total is None:
+                continue
+            growth = item["activations_24h"] - previous_total
+            if growth <= 0:
+                continue
+            item["reported_activations_since_previous_sync"] = 0
+            item["activations_since_previous_sync"] = growth
+            corrections[pack_size] = growth
+        if corrections:
+            LOGGER.warning(
+                "Activation endpoint returned zero deltas despite rolling-count "
+                "growth; using positive differences: %s",
+                corrections,
+            )
 
     @staticmethod
     def _apply_deltas(
