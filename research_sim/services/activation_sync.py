@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import logging
 import random
 import asyncio
@@ -120,7 +121,9 @@ class ActivationSyncService:
         if since is not None and self._send_since_parameter:
             params["since"] = datetime.fromtimestamp(float(since), timezone.utc).isoformat()
         if self.fetcher is not None:
-            return await self.fetcher(params=params)
+            payload = await self.fetcher(params=params)
+            self._log_snapshot(payload)
+            return payload
 
         headers: Dict[str, str] = {}
         if self.settings.pack_activation_x_api_key:
@@ -147,7 +150,16 @@ class ActivationSyncService:
                     headers=headers,
                 )
             response.raise_for_status()
-            return response.json()
+            payload = response.json()
+            self._log_snapshot(payload)
+            return payload
+
+    @staticmethod
+    def _log_snapshot(payload: Dict[str, Any]) -> None:
+        LOGGER.info(
+            "Activation stats response JSON: %s",
+            json.dumps(payload, ensure_ascii=False, sort_keys=True),
+        )
 
     @staticmethod
     def _parse_timestamp(value: str) -> float:

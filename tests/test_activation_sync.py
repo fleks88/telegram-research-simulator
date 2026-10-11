@@ -48,6 +48,18 @@ class FakeMessaging:
 
 
 class ActivationSyncTest(unittest.IsolatedAsyncioTestCase):
+    def test_snapshot_json_is_written_to_info_log(self) -> None:
+        with self.assertLogs(
+            "research_sim.services.activation_sync",
+            level="INFO",
+        ) as captured:
+            ActivationSyncService._log_snapshot({"status": "готово", "count": 3})
+
+        self.assertIn(
+            'Activation stats response JSON: {"count": 3, "status": "готово"}',
+            captured.output[0],
+        )
+
     async def test_fetch_prefers_x_api_key_and_keeps_bearer_fallback(self) -> None:
         captured: Dict[str, Any] = {}
 
