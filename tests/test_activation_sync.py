@@ -210,6 +210,7 @@ class ActivationSyncTest(unittest.IsolatedAsyncioTestCase):
                 (first_at + timedelta(minutes=10)).isoformat(),
             )
             self.assertEqual(state["remainders"]["8100x10"], 0)
+            self.assertEqual(state["trigger_counts"], {"8100": 1})
 
     async def test_fetch_retries_without_since_when_endpoint_rejects_it(self) -> None:
         calls: list[Dict[str, Any]] = []

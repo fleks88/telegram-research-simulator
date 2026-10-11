@@ -292,6 +292,7 @@ def get_activation_status(request: Request) -> dict:
         "last_response": state.get("last_response"),
         "last_sync_at": state.get("last_sync_at"),
         "remainders": state.get("remainders", {}),
+        "trigger_counts": state.get("trigger_counts", {}),
         "pending": len(state.get("pending", [])),
     }
 

@@ -13,6 +13,7 @@ from zoneinfo import ZoneInfo
 
 from dotenv import load_dotenv
 from telegram import BotCommand, InlineKeyboardButton, InlineKeyboardMarkup, Update
+from telegram.error import BadRequest
 from telegram.ext import (
     Application,
     CallbackQueryHandler,
@@ -182,6 +183,40 @@ def format_moscow_time(timestamp: float) -> str:
     return value.strftime("%d.%m.%Y %H:%M МСК")
 
 
+def format_activation_home(data: Dict[str, Any]) -> str:
+    enabled = bool(data.get("enabled"))
+    last_response = data.get("last_response") or {}
+    packs = {
+        int(item["pack_size"]): int(item["activations_24h"])
+        for item in last_response.get("packs", [])
+        if isinstance(item, dict)
+        and isinstance(item.get("pack_size"), int)
+        and isinstance(item.get("activations_24h"), int)
+    }
+    trigger_counts = data.get("trigger_counts") or {}
+    lines = [
+        f"⚡ Активации: {'включены' if enabled else 'выключены'}",
+        "Активации за 24 часа / срабатывания триггера:",
+    ]
+    for pack_size in sorted(PACK_SIZES, reverse=True):
+        activation_count = str(packs[pack_size]) if pack_size in packs else "—"
+        triggered = int(trigger_counts.get(str(pack_size), 0))
+        lines.append(f"• {pack_size} UC: {activation_count} / {triggered}")
+    lines.append(f"Очередь: {int(data.get('pending', 0))}")
+    if data.get("last_sync_at") is not None:
+        lines.append(f"Обновлено: {format_moscow_time(float(data['last_sync_at']))}")
+    lines.append("\nГлавное меню:")
+    return "\n".join(lines)
+
+
+async def activation_home_text(context: ContextTypes.DEFAULT_TYPE) -> str:
+    try:
+        return format_activation_home(await _api(context).activation_status())
+    except Exception as exc:
+        LOGGER.warning("Could not load activation summary for the home menu: %s", exc)
+        return "⚡ Статистика активаций временно недоступна.\n\nГлавное меню:"
+
+
 def format_time_until(timestamp: float, *, now: Optional[float] = None) -> str:
     current = datetime.now(timezone.utc).timestamp() if now is None else now
     seconds = max(0, int(timestamp - current))
@@ -249,7 +284,11 @@ async def _reply(
     query = update.callback_query
     if query:
         await query.answer()
-        await query.edit_message_text(text, reply_markup=reply_markup)
+        try:
+            await query.edit_message_text(text, reply_markup=reply_markup)
+        except BadRequest as exc:
+            if "message is not modified" not in str(exc).casefold():
+                raise
     elif update.effective_message:
         await update.effective_message.reply_text(text, reply_markup=reply_markup)
 
@@ -261,7 +300,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     # /start is also the reliable escape hatch from any abandoned wizard.
     context.user_data.clear()
     await update.effective_message.reply_text(
-        "Панель управления исследовательским стендом. Время показывается по Москве.",
+        await activation_home_text(context),
         reply_markup=home_keyboard(),
     )
 
@@ -270,7 +309,7 @@ async def show_home(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not _is_authorized(update, context):
         await _deny(update)
         return
-    await _reply(update, "Главное меню:", reply_markup=home_keyboard())
+    await _reply(update, await activation_home_text(context), reply_markup=home_keyboard())
 
 
 async def whoami(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -2323,6 +2362,9 @@ def build_application() -> Application:
 
 def main() -> None:
     logging.basicConfig(level=os.environ.get("LOG_LEVEL", "INFO"))
+    # httpx logs the full Telegram Bot API URL, which contains the bot token.
+    logging.getLogger("httpx").setLevel(logging.WARNING)
+    logging.getLogger("httpcore").setLevel(logging.WARNING)
     application = build_application()
     application.run_polling(allowed_updates=Update.ALL_TYPES)
 

@@ -4,8 +4,14 @@ import unittest
 import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import AsyncMock
+
+from telegram.error import BadRequest
 
 from research_sim.bot.app import (
+    _reply,
+    format_activation_home,
     format_moscow_time,
     is_admin,
     parse_activation_rules,
@@ -21,6 +27,26 @@ class ControlBotHelpersTest(unittest.TestCase):
     def test_history_time_is_rendered_in_moscow_timezone(self) -> None:
         timestamp = datetime(2026, 10, 3, 9, 0, tzinfo=timezone.utc).timestamp()
         self.assertEqual(format_moscow_time(timestamp), "03.10.2026 12:00 МСК")
+
+    def test_home_text_shows_pack_activations_and_trigger_counts(self) -> None:
+        timestamp = datetime(2026, 10, 12, 7, 0, tzinfo=timezone.utc).timestamp()
+        text = format_activation_home({
+            "enabled": True,
+            "last_sync_at": timestamp,
+            "last_response": {
+                "packs": [
+                    {"pack_size": 8100, "activations_24h": 12345},
+                    {"pack_size": 3650, "activations_24h": 678},
+                ],
+            },
+            "trigger_counts": {"8100": 2},
+            "pending": 1,
+        })
+
+        self.assertIn("8100 UC: 12345 / 2", text)
+        self.assertIn("3650 UC: 678 / 0", text)
+        self.assertIn("Очередь: 1", text)
+        self.assertIn("12.10.2026 10:00 МСК", text)
 
     def test_only_configured_admin_ids_are_allowed(self) -> None:
         admin_ids = parse_admin_ids("12345, 67890")
@@ -84,6 +110,20 @@ class ControlBotHelpersTest(unittest.TestCase):
         self.assertEqual(suggest_next_account_key(set()), "acc1")
         self.assertEqual(suggest_next_account_key({"acc1", "custom"}), "acc2")
         self.assertEqual(suggest_next_account_key({"acc1", "acc2", "acc4"}), "acc3")
+
+class ControlBotAsyncTest(unittest.IsolatedAsyncioTestCase):
+    async def test_reply_ignores_unchanged_telegram_message(self) -> None:
+        query = SimpleNamespace(
+            answer=AsyncMock(),
+            edit_message_text=AsyncMock(
+                side_effect=BadRequest("Message is not modified")
+            ),
+        )
+        update = SimpleNamespace(callback_query=query, effective_message=None)
+
+        await _reply(update, "Без изменений")
+
+        query.answer.assert_awaited_once()
 
 
 if __name__ == "__main__":

@@ -86,6 +86,7 @@ class ActivationSyncService:
             "last_sync_at": None,
             "remainders": {},
             "pending": [],
+            "trigger_counts": {},
         }
 
         polled = False
@@ -205,6 +206,7 @@ class ActivationSyncService:
         for stale_key in set(remainders) - active_rule_keys:
             remainders.pop(stale_key, None)
         pending = state.setdefault("pending", [])
+        trigger_counts = state.setdefault("trigger_counts", {})
         deltas = {
             item["pack_size"]: item["activations_since_previous_sync"]
             for item in response["packs"]
@@ -226,6 +228,9 @@ class ActivationSyncService:
                     }
                 )
             queued_count += crossed
+            if crossed:
+                pack_key = str(pack_size)
+                trigger_counts[pack_key] = int(trigger_counts.get(pack_key, 0)) + crossed
             remainders[rule_key] = accumulated - crossed * threshold
 
     async def _send_next_pending(

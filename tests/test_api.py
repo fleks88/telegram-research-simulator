@@ -77,6 +77,7 @@ class ApiTest(unittest.TestCase):
         self.assertFalse(response.json()["endpoint_configured"])
         self.assertFalse(response.json()["enabled"])
         self.assertIsNone(response.json()["first_response"])
+        self.assertEqual(response.json()["trigger_counts"], {})
         self.assertEqual(response.json()["pending"], 0)
         replies = self.client.get("/api/v1/auto-replies/status", headers=self.auth)
         self.assertEqual(replies.status_code, 200)
