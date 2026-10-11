@@ -7,10 +7,11 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
-from telegram.error import BadRequest
+from telegram.error import BadRequest, NetworkError
 
 from research_sim.bot.app import (
     _reply,
+    bot_error_handler,
     format_activation_home,
     format_moscow_time,
     is_admin,
@@ -124,6 +125,15 @@ class ControlBotAsyncTest(unittest.IsolatedAsyncioTestCase):
         await _reply(update, "Без изменений")
 
         query.answer.assert_awaited_once()
+
+    async def test_network_error_handler_logs_short_warning(self) -> None:
+        context = SimpleNamespace(error=NetworkError("httpx.ReadError"))
+
+        with self.assertLogs("research_sim.bot.app", level="WARNING") as captured:
+            await bot_error_handler(None, context)
+
+        self.assertIn("polling will retry", captured.output[0])
+        self.assertNotIn("Traceback", captured.output[0])
 
 
 if __name__ == "__main__":

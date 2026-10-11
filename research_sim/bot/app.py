@@ -13,7 +13,7 @@ from zoneinfo import ZoneInfo
 
 from dotenv import load_dotenv
 from telegram import BotCommand, InlineKeyboardButton, InlineKeyboardMarkup, Update
-from telegram.error import BadRequest
+from telegram.error import BadRequest, NetworkError
 from telegram.ext import (
     Application,
     CallbackQueryHandler,
@@ -2207,6 +2207,23 @@ async def post_shutdown(application: Application) -> None:
     await application.bot_data["api"].close()
 
 
+async def bot_error_handler(
+    update: object,
+    context: ContextTypes.DEFAULT_TYPE,
+) -> None:
+    error = context.error
+    if isinstance(error, NetworkError):
+        LOGGER.warning("Temporary Telegram network error; polling will retry: %s", error)
+        return
+    if error is None:
+        LOGGER.error("Telegram update failed without an exception")
+        return
+    LOGGER.error(
+        "Unhandled Telegram bot error",
+        exc_info=(type(error), error, error.__traceback__),
+    )
+
+
 def build_application() -> Application:
     load_dotenv()
     bot_token = os.environ.get("CONTROL_BOT_TOKEN", "").strip()
@@ -2368,6 +2385,7 @@ def build_application() -> Application:
             pattern=r"^(auto:|activation:)(enable|disable)$",
         )
     )
+    application.add_error_handler(bot_error_handler)
     return application
 
 
