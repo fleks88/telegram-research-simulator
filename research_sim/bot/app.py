@@ -53,6 +53,9 @@ ACCOUNT_UPLOAD_NAME = 27
 CAMPAIGN_RECIPIENT = 28
 EDIT_RECIPIENT = 29
 MANUAL_REPLY = 30
+TELEGRAM_PROFILE_NAME = 31
+TELEGRAM_PROFILE_USERNAME = 32
+TELEGRAM_PROFILE_AVATAR = 33
 ACCOUNT_KEY_PATTERN = re.compile(r"^[a-zA-Z0-9_-]{1,48}$")
 PACK_SIZES = {8100, 3650, 1800, 660, 325, 60}
 TRAITS = [
@@ -176,6 +179,15 @@ def parse_admin_ids(value: str) -> Set[int]:
     if not admin_ids or any(item <= 0 for item in admin_ids):
         raise ValueError("CONTROL_ADMIN_IDS must contain at least one positive user ID")
     return admin_ids
+
+
+def parse_telegram_profile_name(value: str) -> tuple[str, str]:
+    parts = value.split("|", 1)
+    first_name = parts[0].strip()
+    last_name = parts[1].strip() if len(parts) == 2 else ""
+    if not first_name or len(first_name) > 64 or len(last_name) > 64:
+        raise ValueError("имя обязательно; имя и фамилия должны быть не длиннее 64 символов")
+    return first_name, last_name
 
 
 def format_moscow_time(timestamp: float) -> str:
@@ -372,6 +384,12 @@ async def show_accounts(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
                 callback_data=f"account:delete:{account['account_key']}",
             ),
         ])
+        account_buttons.append([
+            InlineKeyboardButton(
+                f"⚙️ Профиль {account['account_key']}",
+                callback_data=f"tgprofile:{account['account_key']}",
+            ),
+        ])
     markup = InlineKeyboardMarkup(
         account_buttons + [
             [InlineKeyboardButton("➕ Добавить .session", callback_data="flow:add_account")],
@@ -379,6 +397,154 @@ async def show_accounts(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         ]
     )
     await _reply(update, "\n".join(lines), reply_markup=markup)
+
+
+async def show_telegram_profile_menu(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+) -> None:
+    if not _is_authorized(update, context):
+        await _deny(update)
+        return
+    account_key = (update.callback_query.data or "").split(":", 1)[1]
+    await _reply(
+        update,
+        f"Профиль Telegram-сессии: {account_key}\n"
+        "Выберите, что изменить в реальном Telegram-аккаунте:",
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("✏️ Имя и фамилия", callback_data=f"tgname:{account_key}")],
+            [InlineKeyboardButton("🔗 @username", callback_data=f"tgusername:{account_key}")],
+            [InlineKeyboardButton("🖼 Аватар", callback_data=f"tgavatar:{account_key}")],
+            [InlineKeyboardButton("← К аккаунтам", callback_data="menu:accounts")],
+        ]),
+    )
+
+
+async def telegram_profile_name_start(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+) -> int:
+    if not _is_authorized(update, context):
+        await _deny(update)
+        return ConversationHandler.END
+    query = update.callback_query
+    await query.answer()
+    context.user_data["telegram_profile_account"] = query.data.split(":", 1)[1]
+    await query.edit_message_text(
+        "Отправьте имя и фамилию через |, например:\nИван | Петров\n\n"
+        "Если фамилия не нужна, отправьте только имя.",
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("Отмена", callback_data="flow:cancel")],
+        ]),
+    )
+    return TELEGRAM_PROFILE_NAME
+
+
+async def telegram_profile_name_entered(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+) -> int:
+    try:
+        first_name, last_name = parse_telegram_profile_name(update.effective_message.text)
+        account_key = context.user_data["telegram_profile_account"]
+        await _api(context).update_telegram_profile_name(
+            account_key,
+            first_name=first_name,
+            last_name=last_name,
+        )
+    except Exception as exc:
+        await update.effective_message.reply_text(f"Не удалось изменить имя: {exc}")
+        return TELEGRAM_PROFILE_NAME
+    context.user_data.clear()
+    await update.effective_message.reply_text(
+        f"Имя Telegram-профиля {account_key} обновлено.",
+        reply_markup=home_keyboard(),
+    )
+    return ConversationHandler.END
+
+
+async def telegram_username_start(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+) -> int:
+    if not _is_authorized(update, context):
+        await _deny(update)
+        return ConversationHandler.END
+    query = update.callback_query
+    await query.answer()
+    context.user_data["telegram_profile_account"] = query.data.split(":", 1)[1]
+    await query.edit_message_text(
+        "Отправьте новый @username. Минимум 5 символов: латинские буквы, "
+        "цифры и _. Чтобы удалить username, отправьте -",
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("Отмена", callback_data="flow:cancel")],
+        ]),
+    )
+    return TELEGRAM_PROFILE_USERNAME
+
+
+async def telegram_username_entered(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+) -> int:
+    value = update.effective_message.text.strip()
+    username = "" if value == "-" else value.removeprefix("@").strip()
+    try:
+        account_key = context.user_data["telegram_profile_account"]
+        result = await _api(context).update_telegram_username(account_key, username)
+    except Exception as exc:
+        await update.effective_message.reply_text(f"Не удалось изменить username: {exc}")
+        return TELEGRAM_PROFILE_USERNAME
+    context.user_data.clear()
+    shown = "удалён" if not result["username"] else "@" + result["username"]
+    await update.effective_message.reply_text(
+        f"Username Telegram-профиля {account_key}: {shown}.",
+        reply_markup=home_keyboard(),
+    )
+    return ConversationHandler.END
+
+
+async def telegram_avatar_start(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+) -> int:
+    if not _is_authorized(update, context):
+        await _deny(update)
+        return ConversationHandler.END
+    query = update.callback_query
+    await query.answer()
+    context.user_data["telegram_profile_account"] = query.data.split(":", 1)[1]
+    await query.edit_message_text(
+        "Отправьте новую фотографию профиля (до 10 МБ).",
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("Отмена", callback_data="flow:cancel")],
+        ]),
+    )
+    return TELEGRAM_PROFILE_AVATAR
+
+
+async def telegram_avatar_received(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+) -> int:
+    photo = update.effective_message.photo[-1]
+    if photo.file_size and photo.file_size > 10 * 1024 * 1024:
+        await update.effective_message.reply_text("Фото должно быть не больше 10 МБ.")
+        return TELEGRAM_PROFILE_AVATAR
+    telegram_file = await photo.get_file()
+    image = bytes(await telegram_file.download_as_bytearray())
+    try:
+        account_key = context.user_data["telegram_profile_account"]
+        await _api(context).update_telegram_avatar(account_key, image)
+    except Exception as exc:
+        await update.effective_message.reply_text(f"Не удалось изменить аватар: {exc}")
+        return TELEGRAM_PROFILE_AVATAR
+    context.user_data.clear()
+    await update.effective_message.reply_text(
+        f"Аватар Telegram-профиля {account_key} обновлён.",
+        reply_markup=home_keyboard(),
+    )
+    return ConversationHandler.END
 
 
 async def show_history(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -2275,6 +2441,18 @@ def build_application() -> Application:
                 manual_send_start,
                 pattern=r"^manualsend:[a-zA-Z0-9_-]+$",
             ),
+            CallbackQueryHandler(
+                telegram_profile_name_start,
+                pattern=r"^tgname:[a-zA-Z0-9_-]+$",
+            ),
+            CallbackQueryHandler(
+                telegram_username_start,
+                pattern=r"^tgusername:[a-zA-Z0-9_-]+$",
+            ),
+            CallbackQueryHandler(
+                telegram_avatar_start,
+                pattern=r"^tgavatar:[a-zA-Z0-9_-]+$",
+            ),
         ],
         states={
             ADD_ACCOUNT_KEY: [
@@ -2347,6 +2525,15 @@ def build_application() -> Application:
             MANUAL_REPLY: [
                 MessageHandler(filters.TEXT & ~filters.COMMAND, manual_reply_entered)
             ],
+            TELEGRAM_PROFILE_NAME: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, telegram_profile_name_entered)
+            ],
+            TELEGRAM_PROFILE_USERNAME: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, telegram_username_entered)
+            ],
+            TELEGRAM_PROFILE_AVATAR: [
+                MessageHandler(filters.PHOTO, telegram_avatar_received)
+            ],
         },
         fallbacks=[
             CommandHandler("cancel", cancel),
@@ -2378,6 +2565,12 @@ def build_application() -> Application:
     )
     application.add_handler(
         CallbackQueryHandler(close_manual_chat, pattern=r"^manualclose:[a-zA-Z0-9_-]+$")
+    )
+    application.add_handler(
+        CallbackQueryHandler(
+            show_telegram_profile_menu,
+            pattern=r"^tgprofile:[a-zA-Z0-9_-]+$",
+        )
     )
     application.add_handler(
         CallbackQueryHandler(

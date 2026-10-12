@@ -108,6 +108,36 @@ class TelethonSender:
                     caption=text,
                 )
 
+    async def update_profile_name(
+        self,
+        account_key: str,
+        *,
+        first_name: str,
+        last_name: str,
+    ) -> None:
+        from telethon import functions
+
+        client = await self.connect_session(account_key)
+        await client(functions.account.UpdateProfileRequest(
+            first_name=first_name,
+            last_name=last_name,
+        ))
+
+    async def update_username(self, account_key: str, username: str) -> None:
+        from telethon import functions
+
+        client = await self.connect_session(account_key)
+        await client(functions.account.UpdateUsernameRequest(username=username))
+
+    async def update_avatar(self, account_key: str, photo: bytes) -> None:
+        from telethon import functions
+
+        client = await self.connect_session(account_key)
+        photo_stream = BytesIO(photo)
+        photo_stream.name = "avatar.jpg"
+        uploaded = await client.upload_file(photo_stream)
+        await client(functions.photos.UploadProfilePhotoRequest(file=uploaded))
+
     def _make_client(self, session_path: str, account_key: str) -> Any:
         client_factory = self.client_factory
         if client_factory is None:

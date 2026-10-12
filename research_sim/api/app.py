@@ -86,6 +86,7 @@ def create_app(
     app.state.database = app_database
     app.state.database_requests = database_requests
     app.state.messaging_service = messaging_service
+    app.state.telegram_sender = telegram_sender
     app.state.campaign_service = campaign_service
     app.state.account_service = account_service
     app.state.persona_research_service = persona_research_service

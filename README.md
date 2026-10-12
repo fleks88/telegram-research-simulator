@@ -331,6 +331,9 @@ baseline и ничего не отправляет. Далее использу�
 - `GET /api/v1/accounts` — список зарегистрированных аккаунтов отправителя;
 - `POST /api/v1/accounts` — добавить аккаунт в реестр;
 - `DELETE /api/v1/accounts/{account_key}` — удалить аккаунт и связанные данные из БД, не удаляя файлы сессии;
+- `PUT /api/v1/accounts/{account_key}/telegram-profile` — изменить имя и фамилию Telegram-профиля;
+- `PUT /api/v1/accounts/{account_key}/telegram-username` — изменить или удалить публичный username;
+- `POST /api/v1/accounts/{account_key}/telegram-avatar` — загрузить JPEG-аватар до 10 МБ;
 - `PATCH /api/v1/accounts/{account_key}` — включить или отключить аккаунт;
 - `GET /api/v1/accounts/{account_key}/history` — постраничная история аккаунта;
 - `GET /api/v1/accounts/{account_key}/timeline` — входящие, исходящие и очередь;

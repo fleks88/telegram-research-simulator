@@ -52,6 +52,41 @@ class ApiClient:
     async def delete_account(self, account_key: str) -> Dict[str, Any]:
         return await self.request("DELETE", "/api/v1/accounts/" + account_key)
 
+    async def update_telegram_profile_name(
+        self,
+        account_key: str,
+        *,
+        first_name: str,
+        last_name: str,
+    ) -> Dict[str, Any]:
+        return await self.request(
+            "PUT",
+            "/api/v1/accounts/" + account_key + "/telegram-profile",
+            json={"first_name": first_name, "last_name": last_name},
+        )
+
+    async def update_telegram_username(
+        self,
+        account_key: str,
+        username: str,
+    ) -> Dict[str, Any]:
+        return await self.request(
+            "PUT",
+            "/api/v1/accounts/" + account_key + "/telegram-username",
+            json={"username": username},
+        )
+
+    async def update_telegram_avatar(
+        self,
+        account_key: str,
+        photo: bytes,
+    ) -> Dict[str, Any]:
+        return await self.request(
+            "POST",
+            "/api/v1/accounts/" + account_key + "/telegram-avatar",
+            files={"photo": ("avatar.jpg", photo, "image/jpeg")},
+        )
+
     async def account_persona(self, account_key: str) -> Dict[str, Any]:
         return await self.request("GET", "/api/v1/accounts/" + account_key + "/persona")
 

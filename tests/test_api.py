@@ -18,15 +18,34 @@ class FakeTelegramClient:
         self,
         account_key: str,
         sent_messages: list[tuple[str, str, str, bytes | None]],
+        profile_operations: list[tuple[str, Any]],
     ) -> None:
         self.account_key = account_key
         self.sent_messages = sent_messages
+        self.profile_operations = profile_operations
 
     async def __aenter__(self) -> "FakeTelegramClient":
         return self
 
     async def __aexit__(self, *args: Any) -> None:
         return None
+
+    async def connect(self) -> None:
+        return None
+
+    async def disconnect(self) -> None:
+        return None
+
+    async def is_user_authorized(self) -> bool:
+        return True
+
+    async def __call__(self, request: Any) -> None:
+        self.profile_operations.append((type(request).__name__, request))
+
+    async def upload_file(self, file: Any) -> bytes:
+        content = file.read()
+        self.profile_operations.append(("upload_file", content))
+        return b"uploaded-avatar"
 
     async def send_message(self, recipient: str, text: str) -> None:
         self.sent_messages.append((self.account_key, recipient, text, None))
@@ -41,6 +60,7 @@ class ApiTest(unittest.TestCase):
         self.temp_directory = tempfile.TemporaryDirectory()
         root = Path(self.temp_directory.name)
         self.sent_messages: list[tuple[str, str, str, bytes | None]] = []
+        self.profile_operations: list[tuple[str, Any]] = []
         settings = Settings(
             database_path=root / "api.sqlite3",
             api_token="test-api-token",
@@ -56,6 +76,7 @@ class ApiTest(unittest.TestCase):
             client_factory=lambda **kwargs: FakeTelegramClient(
                 Path(kwargs["session"]).name,
                 self.sent_messages,
+                self.profile_operations,
             ),
         )
         self.client = TestClient(self.app)
@@ -303,6 +324,51 @@ class ApiTest(unittest.TestCase):
         self.assertFalse(disabled.json()["enabled"])
         listed = self.client.get("/api/v1/accounts", headers=self.auth)
         self.assertEqual(listed.json()[0]["account_key"], "business")
+
+    def test_telegram_profile_name_username_and_avatar_can_be_updated(self) -> None:
+        self.client.post(
+            "/api/v1/accounts",
+            headers=self.auth,
+            json={"account_key": "business", "label": "Business account"},
+        )
+
+        name = self.client.put(
+            "/api/v1/accounts/business/telegram-profile",
+            headers=self.auth,
+            json={"first_name": "Иван", "last_name": "Петров"},
+        )
+        username = self.client.put(
+            "/api/v1/accounts/business/telegram-username",
+            headers=self.auth,
+            json={"username": "buyer_test"},
+        )
+        avatar = self.client.post(
+            "/api/v1/accounts/business/telegram-avatar",
+            headers=self.auth,
+            files={"photo": ("avatar.jpg", b"\xff\xd8\xffavatar", "image/jpeg")},
+        )
+
+        self.assertEqual(name.status_code, 200)
+        self.assertEqual(name.json()["first_name"], "Иван")
+        self.assertEqual(username.status_code, 200)
+        self.assertEqual(username.json()["username"], "buyer_test")
+        self.assertEqual(avatar.status_code, 200)
+        operations = [item[0] for item in self.profile_operations]
+        self.assertEqual(operations, [
+            "UpdateProfileRequest",
+            "UpdateUsernameRequest",
+            "upload_file",
+            "UploadProfilePhotoRequest",
+        ])
+        self.assertEqual(self.profile_operations[0][1].first_name, "Иван")
+        self.assertEqual(self.profile_operations[1][1].username, "buyer_test")
+
+        invalid = self.client.put(
+            "/api/v1/accounts/business/telegram-username",
+            headers=self.auth,
+            json={"username": "bad"},
+        )
+        self.assertEqual(invalid.status_code, 422)
 
     def test_account_can_be_deleted_with_its_database_data(self) -> None:
         added = self.client.post(

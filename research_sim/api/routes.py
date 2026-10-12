@@ -29,6 +29,8 @@ from .schemas import (
     SenderAccountCreate,
     SenderAccountEnabledUpdate,
     SenderAccountResponse,
+    TelegramProfileNameUpdate,
+    TelegramUsernameUpdate,
     SendMessageRequest,
     SendMessageResponse,
 )
@@ -132,6 +134,79 @@ def delete_sender_account(account_key: str, request: Request) -> dict[str, bool]
     if not deleted:
         raise HTTPException(status_code=404, detail="sender account not found")
     return {"deleted": True}
+
+
+def _require_sender_account(account_key: str, request: Request) -> None:
+    if not any(
+        item.account_key == account_key
+        for item in request.app.state.account_service.list()
+    ):
+        raise HTTPException(status_code=404, detail="sender account not found")
+
+
+@protected_router.put("/accounts/{account_key}/telegram-profile")
+async def update_telegram_profile_name(
+    account_key: str,
+    payload: TelegramProfileNameUpdate,
+    request: Request,
+) -> dict[str, str]:
+    _require_sender_account(account_key, request)
+    first_name = payload.first_name.strip()
+    last_name = payload.last_name.strip()
+    if not first_name:
+        raise HTTPException(status_code=422, detail="first_name must not be blank")
+    try:
+        await request.app.state.telegram_sender.update_profile_name(
+            account_key,
+            first_name=first_name,
+            last_name=last_name,
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return {"account_key": account_key, "first_name": first_name, "last_name": last_name}
+
+
+@protected_router.put("/accounts/{account_key}/telegram-username")
+async def update_telegram_username(
+    account_key: str,
+    payload: TelegramUsernameUpdate,
+    request: Request,
+) -> dict[str, str]:
+    _require_sender_account(account_key, request)
+    username = payload.username.strip().removeprefix("@").strip()
+    if username and (
+        len(username) < 5
+        or not username[0].isalpha()
+        or not all(character.isascii() and (character.isalnum() or character == "_") for character in username)
+    ):
+        raise HTTPException(
+            status_code=422,
+            detail="username must be 5-32 ASCII letters, digits or underscores and start with a letter",
+        )
+    try:
+        await request.app.state.telegram_sender.update_username(account_key, username)
+    except Exception as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return {"account_key": account_key, "username": username}
+
+
+@protected_router.post("/accounts/{account_key}/telegram-avatar")
+async def update_telegram_avatar(
+    account_key: str,
+    request: Request,
+    photo: UploadFile = File(...),
+) -> dict[str, str]:
+    _require_sender_account(account_key, request)
+    image = await photo.read(10 * 1024 * 1024 + 1)
+    if len(image) > 10 * 1024 * 1024:
+        raise HTTPException(status_code=413, detail="avatar must be 10 MB or smaller")
+    if not image.startswith(b"\xff\xd8\xff"):
+        raise HTTPException(status_code=422, detail="avatar must be a JPEG image")
+    try:
+        await request.app.state.telegram_sender.update_avatar(account_key, image)
+    except Exception as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return {"account_key": account_key, "status": "updated"}
 
 
 @protected_router.get(

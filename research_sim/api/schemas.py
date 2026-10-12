@@ -46,6 +46,19 @@ class SenderAccountEnabledUpdate(BaseModel):
     enabled: bool
 
 
+class TelegramProfileNameUpdate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    first_name: str = Field(min_length=1, max_length=64)
+    last_name: str = Field(default="", max_length=64)
+
+
+class TelegramUsernameUpdate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    username: str = Field(default="", max_length=32)
+
+
 class PersonaProfilePayload(BaseModel):
     model_config = ConfigDict(extra="forbid")
 

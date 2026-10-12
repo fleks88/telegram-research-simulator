@@ -18,6 +18,7 @@ from research_sim.bot.app import (
     parse_activation_rules,
     parse_activation_rules,
     parse_admin_ids,
+    parse_telegram_profile_name,
     save_session_bundle,
     suggest_next_account_key,
     validate_session_upload,
@@ -54,6 +55,12 @@ class ControlBotHelpersTest(unittest.TestCase):
         self.assertTrue(is_admin(12345, admin_ids))
         self.assertFalse(is_admin(11111, admin_ids))
         self.assertFalse(is_admin(None, admin_ids))
+
+    def test_telegram_profile_name_parser_supports_optional_last_name(self) -> None:
+        self.assertEqual(parse_telegram_profile_name("Иван | Петров"), ("Иван", "Петров"))
+        self.assertEqual(parse_telegram_profile_name("Иван"), ("Иван", ""))
+        with self.assertRaises(ValueError):
+            parse_telegram_profile_name(" | Петров")
 
     def test_activation_rule_parser_supports_multipliers(self) -> None:
         self.assertEqual(
