@@ -29,6 +29,26 @@ class DatabaseRequests:
             return None
         return CampaignSettingsRecord(config=json.loads(row["config_json"]))
 
+    def register_control_bot_user(self, operator_id: int) -> None:
+        now = time.time()
+        with self.database.connect() as connection:
+            connection.execute(
+                """INSERT INTO control_bot_users
+                   (operator_id, first_seen_at, last_seen_at)
+                   VALUES (?, ?, ?)
+                   ON CONFLICT(operator_id) DO UPDATE SET
+                       last_seen_at = excluded.last_seen_at""",
+                (operator_id, now, now),
+            )
+
+    def list_control_bot_users(self) -> list[int]:
+        with self.database.connect() as connection:
+            rows = connection.execute(
+                """SELECT operator_id FROM control_bot_users
+                   ORDER BY first_seen_at, operator_id"""
+            ).fetchall()
+        return [int(row["operator_id"]) for row in rows]
+
     def get_sender_persona(self, account_key: str) -> Optional[Dict[str, Any]]:
         with self.database.connect() as connection:
             row = connection.execute(
@@ -712,15 +732,16 @@ class DatabaseRequests:
             rows = connection.execute(
                 """SELECT * FROM (
                        SELECT 'incoming' AS kind, message_text, received_at AS created_at,
-                              NULL AS due_at, reply_status AS status
+                              NULL AS due_at, reply_status AS status,
+                              0 AS photo_attached
                        FROM received_messages WHERE account_key = ?
                        UNION ALL
                        SELECT 'outgoing' AS kind, message_text, created_at,
-                              NULL AS due_at, status
+                              NULL AS due_at, status, photo_attached
                        FROM message_deliveries WHERE sender_account = ?
                        UNION ALL
                        SELECT 'planned' AS kind, COALESCE(reply_text, '') AS message_text,
-                              created_at, due_at, status
+                              created_at, due_at, status, 0 AS photo_attached
                        FROM pending_auto_replies
                        WHERE account_key = ? AND status IN ('queued', 'processing')
                    ) ORDER BY created_at DESC LIMIT ?""",

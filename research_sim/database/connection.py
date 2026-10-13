@@ -148,6 +148,12 @@ CREATE TABLE IF NOT EXISTS manual_event_notifications (
     PRIMARY KEY (event_id, operator_id)
 );
 
+CREATE TABLE IF NOT EXISTS control_bot_users (
+    operator_id INTEGER PRIMARY KEY,
+    first_seen_at REAL NOT NULL,
+    last_seen_at REAL NOT NULL
+);
+
 CREATE UNIQUE INDEX IF NOT EXISTS idx_campaign_delivery_slot
 ON message_deliveries(campaign_id, campaign_day, campaign_slot)
 WHERE campaign_id IS NOT NULL;

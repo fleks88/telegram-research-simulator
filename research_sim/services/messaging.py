@@ -80,7 +80,7 @@ class MessagingService:
     ) -> SendResult:
         normalized_recipient = self.validate_recipient(recipient)
         message = text.strip()
-        if not message:
+        if not message and photo is None:
             raise ValueError("message must not be empty")
         if len(message) > 4096:
             raise ValueError("message must be 4096 characters or fewer")

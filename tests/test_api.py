@@ -708,6 +708,80 @@ class ApiTest(unittest.TestCase):
             [],
         )
 
+    def test_manual_replies_support_photo_with_or_without_caption(self) -> None:
+        self.client.post(
+            "/api/v1/accounts",
+            headers=self.auth,
+            json={"account_key": "photo_acc", "label": "Photo account"},
+        )
+        requests = self.app.state.database_requests
+        requests.claim_received_message(
+            account_key="photo_acc",
+            telegram_message_id=701,
+            sender_id=9001,
+            message_text="Пришли фото",
+            recipient="partner_user",
+        )
+        requests.activate_manual_conversation(
+            account_key="photo_acc",
+            recipient="partner_user",
+            telegram_message_id=701,
+        )
+        requests.create_manual_event(
+            account_key="photo_acc",
+            recipient="partner_user",
+            telegram_message_id=701,
+            incoming_text="Пришли фото",
+        )
+        event_id = self.client.get(
+            "/api/v1/manual/events",
+            headers=self.auth,
+            params={"operator_id": 101},
+        ).json()[0]["id"]
+        image = b"\xff\xd8\xff\xe0manual-photo"
+
+        answer = self.client.post(
+            f"/api/v1/manual/events/{event_id}/reply-with-photo",
+            headers=self.auth,
+            data={"operator_id": "101", "text": ""},
+            files={"photo": ("reply.jpg", image, "image/jpeg")},
+        )
+        self.assertEqual(answer.status_code, 200, answer.text)
+        self.assertTrue(answer.json()["photo_attached"])
+        self.assertEqual(answer.json()["text"], "")
+        self.assertEqual(
+            self.sent_messages[-1],
+            ("photo_acc", "@partner_user", "", image),
+        )
+
+        followup = self.client.post(
+            "/api/v1/manual/conversations/photo_acc/send-with-photo",
+            headers=self.auth,
+            data={"operator_id": "202", "text": "вот фото"},
+            files={"photo": ("followup.jpg", image, "image/jpeg")},
+        )
+        self.assertEqual(followup.status_code, 200, followup.text)
+        self.assertEqual(followup.json()["text"], "вот фото")
+        self.assertEqual(
+            self.sent_messages[-1],
+            ("photo_acc", "@partner_user", "вот фото", image),
+        )
+
+    def test_control_bot_users_are_persisted_for_notifications(self) -> None:
+        for operator_id in (303, 101, 303):
+            response = self.client.post(
+                f"/api/v1/control-bot/users/{operator_id}",
+                headers=self.auth,
+            )
+            self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(
+            self.client.get(
+                "/api/v1/control-bot/users",
+                headers=self.auth,
+            ).json(),
+            [303, 101],
+        )
+
     def test_time_scheduled_delivery_is_removed(self) -> None:
         payload = {
             "campaign_id": "partner-test",

@@ -394,6 +394,19 @@ def get_manual_events(
     )
 
 
+@protected_router.get("/control-bot/users")
+def get_control_bot_users(request: Request) -> list[int]:
+    return request.app.state.database_requests.list_control_bot_users()
+
+
+@protected_router.post("/control-bot/users/{operator_id}")
+def register_control_bot_user(operator_id: int, request: Request) -> dict:
+    if operator_id <= 0:
+        raise HTTPException(status_code=422, detail="operator_id must be positive")
+    request.app.state.database_requests.register_control_bot_user(operator_id)
+    return {"status": "registered", "operator_id": operator_id}
+
+
 @protected_router.post("/manual/events/{event_id}/notified")
 def mark_manual_event_notified(
     event_id: int,
@@ -464,6 +477,67 @@ async def reply_to_manual_event(
     }
 
 
+@protected_router.post("/manual/events/{event_id}/reply-with-photo")
+async def reply_to_manual_event_with_photo(
+    event_id: int,
+    request: Request,
+    operator_id: int = Form(..., gt=0),
+    text: str = Form(default="", max_length=1024),
+    photo: UploadFile = File(...),
+) -> dict:
+    image = await photo.read(10 * 1024 * 1024 + 1)
+    if len(image) > 10 * 1024 * 1024:
+        raise HTTPException(status_code=413, detail="photo must be 10 MB or smaller")
+    if not image.startswith(b"\xff\xd8\xff"):
+        raise HTTPException(status_code=422, detail="photo must be a JPEG image")
+    requests = request.app.state.database_requests
+    event = requests.claim_manual_event(event_id)
+    if event is None:
+        raise HTTPException(
+            status_code=409,
+            detail="message was already answered or manual mode is closed",
+        )
+    account = next(
+        (
+            item for item in requests.list_sender_accounts()
+            if item.account_key == event["account_key"]
+        ),
+        None,
+    )
+    if account is None or not account.enabled:
+        requests.release_manual_event(event_id, "sender account is unavailable")
+        raise HTTPException(status_code=409, detail="sender account is unavailable")
+    try:
+        result = await request.app.state.messaging_service.send_message(
+            event["recipient"],
+            text,
+            sender_account_index=account.account_index,
+            photo=image,
+        )
+    except Exception as exc:
+        requests.release_manual_event(event_id, str(exc))
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    requests.finish_manual_event(
+        event_id,
+        operator_id=operator_id,
+        sent_text=result.text,
+    )
+    requests.set_received_message_status(
+        event["account_key"],
+        event["telegram_message_id"],
+        "replied",
+    )
+    return {
+        "status": "sent",
+        "event_id": event_id,
+        "account_key": event["account_key"],
+        "recipient": result.recipient,
+        "text": result.text,
+        "photo_attached": True,
+        "operator_id": operator_id,
+    }
+
+
 @protected_router.post("/manual/conversations/{account_key}/send")
 async def send_to_manual_conversation(
     account_key: str,
@@ -495,6 +569,48 @@ async def send_to_manual_conversation(
         "recipient": result.recipient,
         "text": result.text,
         "operator_id": payload.operator_id,
+    }
+
+
+@protected_router.post("/manual/conversations/{account_key}/send-with-photo")
+async def send_photo_to_manual_conversation(
+    account_key: str,
+    request: Request,
+    operator_id: int = Form(..., gt=0),
+    text: str = Form(default="", max_length=1024),
+    photo: UploadFile = File(...),
+) -> dict:
+    image = await photo.read(10 * 1024 * 1024 + 1)
+    if len(image) > 10 * 1024 * 1024:
+        raise HTTPException(status_code=413, detail="photo must be 10 MB or smaller")
+    if not image.startswith(b"\xff\xd8\xff"):
+        raise HTTPException(status_code=422, detail="photo must be a JPEG image")
+    requests = request.app.state.database_requests
+    conversation = requests.get_manual_conversation(account_key)
+    if conversation is None:
+        raise HTTPException(status_code=404, detail="active manual conversation not found")
+    if not conversation["enabled"]:
+        raise HTTPException(status_code=409, detail="sender account is unavailable")
+    account = next(
+        item for item in requests.list_sender_accounts()
+        if item.account_key == account_key
+    )
+    try:
+        result = await request.app.state.messaging_service.send_message(
+            conversation["recipient"],
+            text,
+            sender_account_index=account.account_index,
+            photo=image,
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    return {
+        "status": "sent",
+        "account_key": account_key,
+        "recipient": result.recipient,
+        "text": result.text,
+        "photo_attached": True,
+        "operator_id": operator_id,
     }
 
 

@@ -21,6 +21,7 @@ from telegram.ext import (
     ContextTypes,
     ConversationHandler,
     MessageHandler,
+    TypeHandler,
     filters,
 )
 
@@ -352,10 +353,27 @@ async def whoami(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if user is not None and update.effective_message is not None:
         await update.effective_message.reply_text(
             f"Ваш Telegram user ID: {user.id}\n"
-            "Доступ к панели открыт всем. Добавьте ID в CONTROL_ADMIN_IDS, "
-            "только если этому пользователю нужны автоматические уведомления "
-            "о ручных диалогах."
+            "Доступ к панели открыт всем. После использования бота этот ID "
+            "автоматически получает уведомления о ручных диалогах."
         )
+
+
+async def register_control_user(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+) -> None:
+    user = update.effective_user
+    if user is None:
+        return
+    operator_ids: set[int] = context.application.bot_data["operator_ids"]
+    if user.id in operator_ids:
+        return
+    try:
+        await _api(context).register_control_bot_user(user.id)
+    except Exception as exc:
+        LOGGER.warning("Could not register control-bot user %s: %s", user.id, exc)
+        return
+    operator_ids.add(user.id)
 
 
 async def show_accounts(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -650,6 +668,8 @@ def _manual_notification_text(
     for row in reversed(timeline[:8]):
         role = "👤" if row["kind"] == "incoming" else "🤖"
         content = str(row.get("message_text", "")).replace("\n", " ")[:350]
+        if row.get("photo_attached"):
+            content = ("📷 " + content).strip()
         if row["kind"] != "planned":
             lines.append(f"{role} {content}")
     if event.get("ai_draft"):
@@ -669,7 +689,7 @@ async def _manual_notification_loop(application: Application) -> None:
     api: ApiClient = application.bot_data["api"]
     while True:
         try:
-            for operator_id in application.bot_data["admin_ids"]:
+            for operator_id in list(application.bot_data["operator_ids"]):
                 try:
                     events = await api.manual_events(operator_id)
                 except Exception as exc:
@@ -778,6 +798,8 @@ async def show_manual_chat(
             continue
         role = "👤 Человек" if row["kind"] == "incoming" else f"🤖 {account_key}"
         content = str(row.get("message_text", "")).replace("\n", " ")[:500]
+        if row.get("photo_attached"):
+            content = ("📷 " + content).strip()
         lines.append(f"{role}: {content}")
     if conversation.get("latest_ai_draft"):
         lines.extend([
@@ -820,7 +842,8 @@ async def manual_reply_start(
     context.user_data.pop("manual_account_key", None)
     context.user_data["manual_event_id"] = int(query.data.split(":", 1)[1])
     await query.edit_message_text(
-        "Введите ручной ответ. Он будет отправлен от имени нужного аккаунта без изменений:",
+        "Отправьте текст, фотографию с подписью или фотографию без текста. "
+        "Сообщение уйдёт от имени нужного аккаунта без изменений:",
         reply_markup=InlineKeyboardMarkup([
             [InlineKeyboardButton("Отмена", callback_data="flow:cancel")]
         ]),
@@ -840,7 +863,8 @@ async def manual_send_start(
     context.user_data.pop("manual_event_id", None)
     context.user_data["manual_account_key"] = query.data.split(":", 1)[1]
     await query.edit_message_text(
-        "Введите сообщение. Оно будет отправлено от имени аккаунта без изменений:",
+        "Отправьте текст, фотографию с подписью или фотографию без текста. "
+        "Сообщение уйдёт от имени аккаунта без изменений:",
         reply_markup=InlineKeyboardMarkup([
             [InlineKeyboardButton("Отмена", callback_data="flow:cancel")]
         ]),
@@ -856,21 +880,48 @@ async def manual_reply_entered(
         await _deny(update)
         return ConversationHandler.END
     operator_id = update.effective_user.id
+    message = update.effective_message
+    text = message.caption if message.photo else message.text
+    text = text or ""
     try:
+        photo: bytes | None = None
+        if message.photo:
+            attachment = message.photo[-1]
+            if attachment.file_size and attachment.file_size > 10 * 1024 * 1024:
+                await message.reply_text("Фото должно быть не больше 10 МБ.")
+                return MANUAL_REPLY
+            telegram_file = await attachment.get_file()
+            photo = bytes(await telegram_file.download_as_bytearray())
         if "manual_event_id" in context.user_data:
             event_id = context.user_data.pop("manual_event_id")
-            result = await _api(context).reply_manual_event(
-                event_id,
-                operator_id=operator_id,
-                text=update.effective_message.text,
-            )
+            if photo is None:
+                result = await _api(context).reply_manual_event(
+                    event_id,
+                    operator_id=operator_id,
+                    text=text,
+                )
+            else:
+                result = await _api(context).reply_manual_event_with_photo(
+                    event_id,
+                    operator_id=operator_id,
+                    text=text,
+                    photo=photo,
+                )
         else:
             account_key = context.user_data.pop("manual_account_key")
-            result = await _api(context).send_manual_message(
-                account_key,
-                operator_id=operator_id,
-                text=update.effective_message.text,
-            )
+            if photo is None:
+                result = await _api(context).send_manual_message(
+                    account_key,
+                    operator_id=operator_id,
+                    text=text,
+                )
+            else:
+                result = await _api(context).send_manual_message_with_photo(
+                    account_key,
+                    operator_id=operator_id,
+                    text=text,
+                    photo=photo,
+                )
     except Exception as exc:
         await update.effective_message.reply_text(
             f"Не удалось отправить: {exc}\nВозможно, другой оператор уже ответил.",
@@ -878,7 +929,8 @@ async def manual_reply_entered(
         )
         return ConversationHandler.END
     await update.effective_message.reply_text(
-        f"✅ Отправлено от {result['account_key']}:\n{result['text']}",
+        f"✅ Отправлено от {result['account_key']}:\n"
+        f"{result['text'] or '📷 Фото без подписи'}",
         reply_markup=home_keyboard(),
     )
     return ConversationHandler.END
@@ -2546,6 +2598,15 @@ async def activation_status_command(update: Update, context: ContextTypes.DEFAUL
 
 
 async def post_init(application: Application) -> None:
+    api: ApiClient = application.bot_data["api"]
+    operator_ids: set[int] = application.bot_data["operator_ids"]
+    try:
+        operator_ids.update(await api.control_bot_users())
+        for operator_id in list(application.bot_data["admin_ids"]):
+            await api.register_control_bot_user(operator_id)
+            operator_ids.add(operator_id)
+    except Exception as exc:
+        LOGGER.warning("Could not load control-bot users: %s", exc)
     await application.bot.set_my_commands(
         [
             BotCommand("start", "Открыть панель управления"),
@@ -2610,6 +2671,7 @@ def build_application() -> Application:
     )
     application.bot_data["api"] = api_client
     application.bot_data["admin_ids"] = admin_ids
+    application.bot_data["operator_ids"] = set(admin_ids)
     application.bot_data["legacy_recipient"] = legacy_recipient
     application.bot_data["session_dir"] = str(Path(session_dir).expanduser())
 
@@ -2745,7 +2807,10 @@ def build_application() -> Application:
                 MessageHandler(filters.TEXT & ~filters.COMMAND, edit_recipient_entered)
             ],
             MANUAL_REPLY: [
-                MessageHandler(filters.TEXT & ~filters.COMMAND, manual_reply_entered)
+                MessageHandler(
+                    (filters.TEXT & ~filters.COMMAND) | filters.PHOTO,
+                    manual_reply_entered,
+                )
             ],
             TELEGRAM_PROFILE_NAME: [
                 MessageHandler(filters.TEXT & ~filters.COMMAND, telegram_profile_name_entered)
@@ -2764,6 +2829,7 @@ def build_application() -> Application:
         allow_reentry=True,
         per_message=False,
     )
+    application.add_handler(TypeHandler(Update, register_control_user), group=-1)
     application.add_handler(conversation)
     application.add_handler(CommandHandler("whoami", whoami))
     application.add_handler(CommandHandler("accounts", show_accounts))

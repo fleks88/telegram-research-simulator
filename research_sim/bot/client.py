@@ -231,6 +231,15 @@ class ApiClient:
             params={"operator_id": operator_id},
         )
 
+    async def control_bot_users(self) -> list[int]:
+        return await self.request("GET", "/api/v1/control-bot/users")
+
+    async def register_control_bot_user(self, operator_id: int) -> Dict[str, Any]:
+        return await self.request(
+            "POST",
+            f"/api/v1/control-bot/users/{operator_id}",
+        )
+
     async def mark_manual_event_notified(
         self,
         event_id: int,
@@ -258,6 +267,22 @@ class ApiClient:
             json={"operator_id": operator_id, "text": text},
         )
 
+    async def reply_manual_event_with_photo(
+        self,
+        event_id: int,
+        *,
+        operator_id: int,
+        text: str,
+        photo: bytes,
+        filename: str = "photo.jpg",
+    ) -> Dict[str, Any]:
+        return await self.request(
+            "POST",
+            f"/api/v1/manual/events/{event_id}/reply-with-photo",
+            data={"operator_id": str(operator_id), "text": text},
+            files={"photo": (filename, photo, "image/jpeg")},
+        )
+
     async def close_manual_conversation(
         self,
         account_key: str,
@@ -281,4 +306,20 @@ class ApiClient:
             "POST",
             f"/api/v1/manual/conversations/{account_key}/send",
             json={"operator_id": operator_id, "text": text},
+        )
+
+    async def send_manual_message_with_photo(
+        self,
+        account_key: str,
+        *,
+        operator_id: int,
+        text: str,
+        photo: bytes,
+        filename: str = "photo.jpg",
+    ) -> Dict[str, Any]:
+        return await self.request(
+            "POST",
+            f"/api/v1/manual/conversations/{account_key}/send-with-photo",
+            data={"operator_id": str(operator_id), "text": text},
+            files={"photo": (filename, photo, "image/jpeg")},
         )
