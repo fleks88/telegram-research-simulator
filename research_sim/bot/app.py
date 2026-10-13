@@ -2040,10 +2040,10 @@ async def _ask_campaign_phrases(
     context: ContextTypes.DEFAULT_TYPE,
 ) -> int:
     await update.effective_message.reply_text(
-        "Введите шаблоны сообщений по активациям, по одному на строку (до 100). "
-        "Для суммы покупки используйте {offer_uc}: она случайно выбирается из "
-        "1850, 3800 и 8100 UC. Также доступны служебные поля {date}, {day}, "
-        "{slot}, {pack}, {activations}.",
+        "Введите хотя бы одну резервную фразу (до 100, по одной на строку). "
+        "Для автоматического первого SMS эти фразы больше не определяют сумму "
+        "или пак: сообщение полностью создаётся по редактируемому prompt первого "
+        "сообщения. Поле сохранено для совместимости со старыми настройками.",
         reply_markup=InlineKeyboardMarkup([
             [InlineKeyboardButton("Отмена", callback_data="flow:cancel")]
         ]),

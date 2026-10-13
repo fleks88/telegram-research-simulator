@@ -2,11 +2,9 @@ from __future__ import annotations
 
 import json
 import logging
-import random
 import asyncio
 from datetime import datetime, timezone
 from typing import Any, Awaitable, Callable, Dict, Optional
-from zoneinfo import ZoneInfo
 
 import httpx
 
@@ -21,14 +19,11 @@ from .campaign import SUPPORTED_PACK_SIZES
 
 
 LOGGER = logging.getLogger(__name__)
-MOSCOW = ZoneInfo("Europe/Moscow")
 SYNC_INTERVAL_SECONDS = 300
 MAX_QUEUED_MESSAGES_PER_SYNC = 1000
-PURCHASE_OFFER_AMOUNTS = (1850, 3800, 8100)
-DEFAULT_PURCHASE_PHRASES = (
-    "Хочу купить {offer_uc} UC, сколько будет стоить?",
-    "Сколько стоит {offer_uc} UC?",
-    "Нужно {offer_uc} UC, можно купить?",
+ACTIVATION_GENERATION_TASK = (
+    "Сформируй первое сообщение продавцу строго по редактируемому prompt "
+    "первого сообщения. Не используй никакие суммы или паки из этой служебной задачи."
 )
 
 
@@ -284,35 +279,11 @@ class ActivationSyncService:
         state: Dict[str, Any],
     ) -> Dict[str, Any]:
         item = state["pending"][0]
-        phrases = config.get("phrases") or []
-        if not phrases:
-            return {"status": "no_templates", "pending": len(state["pending"])}
-        if "offer_uc" not in item:
-            item["offer_uc"] = random.choice(PURCHASE_OFFER_AMOUNTS)
-            self.requests.save_activation_sync_state(state)
-        offer_uc = int(item["offer_uc"])
-        phrase = random.choice(phrases)
-        # Older installations used activation-stat placeholders here and could
-        # accidentally expose internal thresholds to the seller. Such templates
-        # are kept in the database for compatibility, but only an explicit
-        # {offer_uc} template is allowed to form the buyer's opening message.
-        if "{offer_uc}" not in phrase:
-            phrase = random.choice(DEFAULT_PURCHASE_PHRASES)
-        at = datetime.fromisoformat(item["as_of"].replace("Z", "+00:00")).astimezone(MOSCOW)
-        text = phrase.format(
-            date=at.strftime("%Y-%m-%d"),
-            day=(at.date() - datetime.fromisoformat(config["start_date"]).date()).days + 1,
-            slot=at.strftime("%H:%M"),
-            pack=item["pack_size"],
-            activations=item["threshold"],
-            offer_uc=offer_uc,
-        )
         try:
             result = await self.messaging.send_message(
                 config["recipient"],
-                text,
+                ACTIVATION_GENERATION_TASK,
                 apply_persona=True,
-                required_offer_uc=offer_uc,
                 activation_trigger=True,
             )
         except SendRateLimitExceeded:
@@ -329,7 +300,6 @@ class ActivationSyncService:
             "status": "sent",
             "pack_size": item["pack_size"],
             "threshold": item["threshold"],
-            "offer_uc": offer_uc,
             "sender_account": result.sender_account,
             "pending": len(state["pending"]),
         }

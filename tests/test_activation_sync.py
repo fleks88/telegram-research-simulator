@@ -9,7 +9,10 @@ from typing import Any, Dict, Optional
 from unittest.mock import patch
 
 from research_sim.database import Database, DatabaseRequests
-from research_sim.services.activation_sync import ActivationSyncService
+from research_sim.services.activation_sync import (
+    ACTIVATION_GENERATION_TASK,
+    ActivationSyncService,
+)
 from research_sim.settings import Settings
 
 
@@ -33,7 +36,7 @@ def make_snapshot(as_of: datetime, delta_8100: int = 0) -> Dict[str, Any]:
 
 class FakeMessaging:
     def __init__(self) -> None:
-        self.sent: list[tuple[str, str, bool, Optional[int]]] = []
+        self.sent: list[tuple[str, str, bool, bool]] = []
 
     async def send_message(
         self,
@@ -41,10 +44,9 @@ class FakeMessaging:
         text: str,
         *,
         apply_persona: bool = False,
-        required_offer_uc: Optional[int] = None,
         activation_trigger: bool = False,
     ) -> Any:
-        self.sent.append((recipient, text, apply_persona, required_offer_uc))
+        self.sent.append((recipient, text, apply_persona, activation_trigger))
         self.activation_trigger = activation_trigger
         return type("SendResult", (), {"sender_account": "business"})()
 
@@ -58,10 +60,13 @@ class ActivationSyncTest(unittest.IsolatedAsyncioTestCase):
             for account_key in ("acc1", "acc2", "acc3"):
                 requests.add_sender_account(account_key, account_key)
 
-            first = requests.reserve_next_activation_account()
-            second = requests.reserve_next_activation_account()
-            third = requests.reserve_next_activation_account()
-            exhausted = requests.reserve_next_activation_account()
+            first = requests.select_next_activation_account()
+            requests.record_activation_account_use(first.account.account_key)
+            second = requests.select_next_activation_account()
+            requests.record_activation_account_use(second.account.account_key)
+            third = requests.select_next_activation_account()
+            requests.record_activation_account_use(third.account.account_key)
+            exhausted = requests.select_next_activation_account()
 
             self.assertEqual(first.account.account_key, "acc1")
             self.assertEqual(second.account.account_key, "acc2")
@@ -73,7 +78,7 @@ class ActivationSyncTest(unittest.IsolatedAsyncioTestCase):
                 {"total": 3, "used": 3, "available": 0},
             )
 
-    def test_existing_rotation_does_not_wrap_activation_back_to_acc1(self) -> None:
+    def test_interrupted_rotation_does_not_consume_activation_account(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             database = Database(Path(directory) / "activation-migration.sqlite3")
             database.initialize()
@@ -85,7 +90,21 @@ class ActivationSyncTest(unittest.IsolatedAsyncioTestCase):
                 requests.reserve_next_sender_account().account.account_key,
                 "acc1",
             )
-            activation = requests.reserve_next_activation_account()
+            activation = requests.select_next_activation_account()
+
+            self.assertEqual(activation.account.account_key, "acc1")
+
+    def test_successful_legacy_rotation_is_treated_as_already_used(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            database = Database(Path(directory) / "activation-migration-sent.sqlite3")
+            database.initialize()
+            requests = DatabaseRequests(database)
+            for account_key in ("acc1", "acc2"):
+                requests.add_sender_account(account_key, account_key)
+
+            legacy = requests.reserve_next_sender_account()
+            requests.record_sender_account_success(legacy.account.account_key)
+            activation = requests.select_next_activation_account()
 
             self.assertEqual(activation.account.account_key, "acc2")
 
@@ -230,12 +249,11 @@ class ActivationSyncTest(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(triggered["status"], "sent")
             self.assertEqual(triggered["pack_size"], 8100)
             self.assertEqual(triggered["threshold"], 10)
-            self.assertIn(triggered["offer_uc"], {1850, 3800, 8100})
             self.assertEqual(messaging.sent, [(
                 "central_user",
-                f"Хочу купить {triggered['offer_uc']} UC",
+                ACTIVATION_GENERATION_TASK,
                 True,
-                triggered["offer_uc"],
+                True,
             )])
             self.assertTrue(messaging.activation_trigger)
 
@@ -348,7 +366,7 @@ class ActivationSyncTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(state["pending"]), 3)
         self.assertEqual(state["trigger_counts"], {"60": 3})
 
-    async def test_legacy_activation_template_never_leaks_internal_threshold(self) -> None:
+    async def test_activation_ignores_legacy_template_and_hardcoded_amounts(self) -> None:
         messaging = FakeMessaging()
         service = object.__new__(ActivationSyncService)
         service.messaging = messaging
@@ -376,10 +394,12 @@ class ActivationSyncTest(unittest.IsolatedAsyncioTestCase):
         result = await service._send_next_pending(config, state)
 
         sent_text = messaging.sent[0][1]
-        self.assertIn(result["offer_uc"], {1850, 3800, 8100})
-        self.assertIn(str(result["offer_uc"]), sent_text)
+        self.assertEqual(sent_text, ACTIVATION_GENERATION_TASK)
         self.assertNotIn("3650", sent_text)
         self.assertNotIn("14600", sent_text)
+        self.assertNotIn("1850", sent_text)
+        self.assertNotIn("3800", sent_text)
+        self.assertNotIn("8100", sent_text)
 
 
 if __name__ == "__main__":

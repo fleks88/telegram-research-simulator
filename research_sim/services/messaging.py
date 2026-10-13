@@ -76,12 +76,10 @@ class MessagingService:
         sender_account_index: Optional[int] = None,
         photo: Optional[bytes] = None,
         apply_persona: bool = False,
-        required_offer_uc: Optional[int] = None,
         activation_trigger: bool = False,
     ) -> SendResult:
         normalized_recipient = self.validate_recipient(recipient)
         message = text.strip()
-        source_message = message
         if not message:
             raise ValueError("message must not be empty")
         if len(message) > 4096:
@@ -93,6 +91,13 @@ class MessagingService:
                 raise ValueError("photo must be a JPEG image")
             if len(message) > 1024:
                 raise ValueError("photo caption must be 1024 characters or fewer")
+        if activation_trigger and (
+            self.prompt_responder is None or not self.settings.llm_api_key
+        ):
+            raise RuntimeError(
+                "activation triggers require an LLM so the first-message prompt "
+                "can generate the message"
+            )
 
         reservation = self.requests.reserve_delivery(
             recipient=normalized_recipient,
@@ -110,14 +115,12 @@ class MessagingService:
         try:
             if sender_account_index is None:
                 if activation_trigger:
-                    account_reservation = self.requests.reserve_next_activation_account(
+                    account_reservation = self.requests.select_next_activation_account(
                         excluded_manual_recipient=normalized_recipient
                     )
                 else:
                     account_reservation = self.requests.reserve_next_sender_account(
-                        excluded_manual_recipient=(
-                            normalized_recipient if required_offer_uc is not None else None
-                        )
+                        excluded_manual_recipient=None
                     )
             else:
                 account_reservation = self.requests.reserve_sender_account_by_index(
@@ -154,8 +157,6 @@ class MessagingService:
                             sender_account.account_key, limit=12, recipient=normalized_recipient,
                         ),
                     )
-                    if required_offer_uc is not None and str(required_offer_uc) not in message:
-                        message = source_message
                 message = self.personas.stylize_scheduled_text(
                     sender_account.account_key,
                     message,
@@ -174,6 +175,8 @@ class MessagingService:
                 message,
                 photo=photo,
             )
+            if activation_trigger:
+                self.requests.record_activation_account_use(sender_account.account_key)
             self.requests.record_sender_account_success(sender_account.account_key)
         except Exception as exc:
             self.requests.finish_delivery(delivery_id, status="failed", error=str(exc))

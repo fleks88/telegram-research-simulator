@@ -78,18 +78,17 @@ class SharedPromptTest(unittest.IsolatedAsyncioTestCase):
                 self.assertNotIn(ACTIVATION_INSTRUCTION, reply_prompt)
             self.assertEqual(campaign.get_settings()["reply_prompt"], custom)
 
-            # The model must not silently replace the amount selected by the
-            # activation trigger. Fall back to the source offer if it does.
-            responder.rewrite_for_persona.return_value = "Хочу купить 1800 UC"
+            # Activation content comes from the editable prompt/model output;
+            # the source task does not force a hardcoded pack amount.
+            responder.rewrite_for_persona.return_value = "Хочу купить 7777 UC"
             result = await messaging.send_message(
                 "seller",
-                "Хочу купить 1850 UC",
+                "Сформируй первое сообщение по prompt",
                 sender_account_index=1,
                 apply_persona=True,
-                required_offer_uc=1850,
+                activation_trigger=True,
             )
-            self.assertIn("1850", result.text)
-            self.assertNotIn("1800", result.text)
+            self.assertIn("7777", result.text)
 
     async def test_editor_shows_full_current_prompt_and_saves_replacement(self) -> None:
         current = "Текущий промпт " + "а" * 3900
@@ -152,18 +151,68 @@ class SharedPromptTest(unittest.IsolatedAsyncioTestCase):
                 database_path=path, api_token="test", telegram_api_id=123,
                 telegram_api_hash="hash", telegram_session_dir=Path(directory),
                 allowed_recipients={"seller"}, minimum_send_interval_seconds=0,
+                llm_api_key="test",
             )
             sender = SimpleNamespace(send_message=AsyncMock())
-            messaging = MessagingService(settings, requests, sender)
+            responder = SimpleNamespace(
+                rewrite_for_persona=AsyncMock(return_value="Хочу купить UC")
+            )
+            messaging = MessagingService(
+                settings, requests, sender, prompt_responder=responder
+            )
 
             result = await messaging.send_message(
                 "seller",
-                "Хочу купить 3800 UC",
+                "Сформируй первое сообщение",
                 apply_persona=True,
-                required_offer_uc=3800,
+                activation_trigger=True,
             )
 
             self.assertEqual(result.sender_account, "available-buyer")
+
+    async def test_failed_activation_send_does_not_consume_account(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "failed-activation.sqlite3"
+            database = Database(path)
+            database.initialize()
+            requests = DatabaseRequests(database)
+            requests.add_sender_account("acc1", "acc1")
+            requests.save_campaign_settings({
+                "recipient": "seller",
+                "reply_prompt": DEFAULT_REPLY_PROMPT,
+            })
+            settings = Settings(
+                database_path=path,
+                api_token="test",
+                telegram_api_id=123,
+                telegram_api_hash="hash",
+                telegram_session_dir=Path(directory),
+                allowed_recipients={"seller"},
+                minimum_send_interval_seconds=0,
+                llm_api_key="test",
+            )
+            sender = SimpleNamespace(
+                send_message=AsyncMock(side_effect=RuntimeError("telegram failed"))
+            )
+            responder = SimpleNamespace(
+                rewrite_for_persona=AsyncMock(return_value="Хочу купить UC")
+            )
+            messaging = MessagingService(
+                settings, requests, sender, prompt_responder=responder
+            )
+
+            with self.assertRaisesRegex(RuntimeError, "telegram failed"):
+                await messaging.send_message(
+                    "seller",
+                    "Сформируй первое сообщение",
+                    apply_persona=True,
+                    activation_trigger=True,
+                )
+
+            self.assertEqual(
+                requests.get_activation_account_counts(),
+                {"total": 1, "used": 0, "available": 1},
+            )
 
     async def test_editor_can_restore_default(self) -> None:
         query = SimpleNamespace(answer=AsyncMock(), edit_message_text=AsyncMock())

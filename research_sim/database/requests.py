@@ -841,12 +841,12 @@ class DatabaseRequests:
                 last_used_at=row["last_used_at"],
             ))
 
-    def reserve_next_activation_account(
+    def select_next_activation_account(
         self,
         *,
         excluded_manual_recipient: Optional[str] = None,
     ) -> SenderAccountReservation:
-        """Permanently reserve one account for exactly one activation trigger."""
+        """Select an unused account; mark it used only after Telegram accepts the send."""
         with self.database.connect() as connection:
             connection.execute("BEGIN IMMEDIATE")
             usage_count = int(
@@ -871,7 +871,8 @@ class DatabaseRequests:
                         connection.execute(
                             """INSERT OR IGNORE INTO activation_account_uses
                                (account_key, used_at)
-                               SELECT account_key, ? FROM telegram_accounts WHERE id <= ?""",
+                               SELECT account_key, ? FROM telegram_accounts
+                               WHERE id <= ? AND send_count > 0""",
                             (time.time(), last_row["id"]),
                         )
             row = connection.execute(
@@ -895,17 +896,6 @@ class DatabaseRequests:
             ).fetchone()
             if row is None:
                 return SenderAccountReservation(None, "no_unused_activation_account")
-            connection.execute(
-                "INSERT INTO activation_account_uses (account_key, used_at) VALUES (?, ?)",
-                (row["account_key"], time.time()),
-            )
-            connection.execute(
-                """INSERT INTO account_rotation (id, last_account_key)
-                   VALUES (1, ?)
-                   ON CONFLICT(id) DO UPDATE SET
-                       last_account_key = excluded.last_account_key""",
-                (row["account_key"],),
-            )
             return SenderAccountReservation(SenderAccount(
                 account_index=int(
                     connection.execute(
@@ -919,6 +909,22 @@ class DatabaseRequests:
                 send_count=int(row["send_count"]),
                 last_used_at=row["last_used_at"],
             ))
+
+    def record_activation_account_use(self, account_key: str) -> None:
+        with self.database.connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            connection.execute(
+                """INSERT OR IGNORE INTO activation_account_uses
+                   (account_key, used_at) VALUES (?, ?)""",
+                (account_key, time.time()),
+            )
+            connection.execute(
+                """INSERT INTO account_rotation (id, last_account_key)
+                   VALUES (1, ?)
+                   ON CONFLICT(id) DO UPDATE SET
+                       last_account_key = excluded.last_account_key""",
+                (account_key,),
+            )
 
     def get_activation_account_counts(self) -> Dict[str, int]:
         with self.database.connect() as connection:
