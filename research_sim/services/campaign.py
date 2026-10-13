@@ -6,7 +6,7 @@ from typing import Any, Dict, Optional
 from ..database.requests import DatabaseRequests
 from ..settings import Settings, normalize_username
 from .messaging import MessagingService
-from .conversation_prompts import shared_prompt
+from .conversation_prompts import activation_prompt, continuation_prompt, shared_prompt
 
 
 SUPPORTED_PACK_SIZES = {8100, 3650, 1800, 660, 325, 60}
@@ -27,7 +27,14 @@ class CampaignService:
         record = self.requests.get_campaign_settings()
         if record is None:
             return None
-        return {**record.config, "reply_prompt": shared_prompt(record.config.get("reply_prompt"))}
+        return {
+            **record.config,
+            "reply_prompt": shared_prompt(record.config.get("reply_prompt")),
+            "activation_prompt": activation_prompt(record.config.get("activation_prompt")),
+            "continuation_prompt": continuation_prompt(
+                record.config.get("continuation_prompt")
+            ),
+        }
 
     def save_settings(self, config: Dict[str, Any]) -> Dict[str, Any]:
         recipient = normalize_username(config["recipient"])
@@ -56,6 +63,10 @@ class CampaignService:
                 )
         config.setdefault("auto_reply_enabled", False)
         config["reply_prompt"] = shared_prompt(config.get("reply_prompt"))
+        config["activation_prompt"] = activation_prompt(config.get("activation_prompt"))
+        config["continuation_prompt"] = continuation_prompt(
+            config.get("continuation_prompt")
+        )
         config.setdefault("reply_delay_min_minutes", 2)
         config.setdefault("reply_delay_max_minutes", 180)
         config.setdefault("activation_enabled", False)
@@ -74,8 +85,9 @@ class CampaignService:
                 raise ValueError("activation multiplier must be between 1 and 1000000")
         if config["activation_enabled"] and not config["activation_rules"]:
             raise ValueError("activation_rules are required when activation sending is enabled")
-        if config["reply_prompt"] is not None and len(config["reply_prompt"]) > 4000:
-            raise ValueError("reply_prompt must be 4000 characters or fewer")
+        for prompt_name in ("reply_prompt", "activation_prompt", "continuation_prompt"):
+            if len(config[prompt_name]) > 4000:
+                raise ValueError(f"{prompt_name} must be 4000 characters or fewer")
         if not (
             0 <= int(config["reply_delay_min_minutes"]) <= 1440
             and 0 <= int(config["reply_delay_max_minutes"]) <= 1440

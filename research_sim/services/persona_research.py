@@ -87,7 +87,12 @@ class PersonaResearchService:
         campaign = self.requests.get_campaign_settings()
         reply_prompt = shared_prompt(campaign.config.get("reply_prompt") if campaign else None)
         effective_prompt = compose_prompt(
-            reply_prompt, self.personas.prompt_fragment(account_key), mode="auto_reply"
+            reply_prompt,
+            self.personas.prompt_fragment(account_key),
+            mode="auto_reply",
+            continuation_value=(
+                campaign.config.get("continuation_prompt") if campaign else None
+            ),
         ) + "\n\n" + self.personas.reply_mode_instruction(
             seed=f"preview-mode:{account_key}:{message}"
         )

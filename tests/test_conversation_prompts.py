@@ -7,7 +7,12 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 from research_sim.bot.app import (
-    EDIT_REPLY_PROMPT, edit_reply_prompt_start, edit_reply_prompt_entered,
+    EDIT_ACTIVATION_PROMPT,
+    EDIT_REPLY_PROMPT,
+    edit_activation_prompt_entered,
+    edit_activation_prompt_start,
+    edit_reply_prompt_start,
+    edit_reply_prompt_entered,
     reset_reply_prompt,
 )
 from research_sim.database import Database, DatabaseRequests
@@ -43,24 +48,33 @@ class SharedPromptTest(unittest.IsolatedAsyncioTestCase):
                 "phrases": ["Хочу {pack} UC"],
             })
             self.assertEqual(config["reply_prompt"], DEFAULT_REPLY_PROMPT)
+            self.assertEqual(config["activation_prompt"], ACTIVATION_INSTRUCTION)
+            self.assertEqual(config["continuation_prompt"], AUTO_REPLY_INSTRUCTION)
             # Send once so the next activation has actual outgoing history.
             await messaging.send_message("seller", "Привет", sender_account_index=1)
             for custom in ("Интересуйся покупкой 1800 UC", "Уточняй цену перед покупкой"):
-                config = campaign.save_settings({**config, "reply_prompt": custom})
+                config = campaign.save_settings({
+                    **config,
+                    "reply_prompt": custom,
+                    "activation_prompt": "Мой prompt первого сообщения",
+                    "continuation_prompt": "Мой prompt продолжения",
+                })
                 await messaging.send_message(
                     "seller", "Хочу 1800 UC", sender_account_index=1, apply_persona=True,
                 )
                 arguments = responder.rewrite_for_persona.call_args.kwargs
                 activation_prompt = arguments["identity_prompt"]
                 self.assertTrue(activation_prompt.startswith(custom))
-                self.assertIn(ACTIVATION_INSTRUCTION, activation_prompt)
+                self.assertIn("Мой prompt первого сообщения", activation_prompt)
+                self.assertNotIn(ACTIVATION_INSTRUCTION, activation_prompt)
                 self.assertNotIn(AUTO_REPLY_INSTRUCTION, activation_prompt)
                 self.assertTrue(arguments["history"])
                 self.assertEqual(arguments["text"], "Хочу 1800 UC")
                 runtime = AutoReplyRuntime(settings, requests, sender, messaging, responder)
-                reply_prompt = runtime._compose_prompt("buyer", config["reply_prompt"])
+                reply_prompt = runtime._compose_prompt("buyer", config)
                 self.assertTrue(reply_prompt.startswith(custom))
-                self.assertIn(AUTO_REPLY_INSTRUCTION, reply_prompt)
+                self.assertIn("Мой prompt продолжения", reply_prompt)
+                self.assertNotIn(AUTO_REPLY_INSTRUCTION, reply_prompt)
                 self.assertNotIn(ACTIVATION_INSTRUCTION, reply_prompt)
             self.assertEqual(campaign.get_settings()["reply_prompt"], custom)
 
@@ -93,6 +107,29 @@ class SharedPromptTest(unittest.IsolatedAsyncioTestCase):
             message.reply_text.assert_awaited_with(current)
             await edit_reply_prompt_entered(update, None)
             self.assertEqual(api.save_campaign.call_args.args[0]["reply_prompt"], message.text)
+
+    async def test_activation_prompt_editor_replaces_mode_instruction(self) -> None:
+        current = "Текущий prompt первого сообщения"
+        query = SimpleNamespace(answer=AsyncMock(), edit_message_text=AsyncMock())
+        message = SimpleNamespace(reply_text=AsyncMock(), text="Новая инструкция активации")
+        update = SimpleNamespace(callback_query=query, effective_message=message)
+        api = SimpleNamespace(
+            get_campaign=AsyncMock(return_value={"activation_prompt": current}),
+            save_campaign=AsyncMock(),
+        )
+        with patch("research_sim.bot.app._is_authorized", return_value=True), patch(
+            "research_sim.bot.app._api", return_value=api,
+        ):
+            self.assertEqual(
+                await edit_activation_prompt_start(update, None),
+                EDIT_ACTIVATION_PROMPT,
+            )
+            message.reply_text.assert_awaited_with(current)
+            await edit_activation_prompt_entered(update, None)
+        self.assertEqual(
+            api.save_campaign.call_args.args[0]["activation_prompt"],
+            message.text,
+        )
 
     async def test_activation_skips_account_already_in_manual_mode(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

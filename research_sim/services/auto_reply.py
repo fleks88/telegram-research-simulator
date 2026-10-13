@@ -260,7 +260,7 @@ class AutoReplyRuntime:
                     self.requests.clear_pending_term_question(account_key)
                     pending_term = None
 
-            prompt = self._compose_prompt(account_key, config.get("reply_prompt"))
+            prompt = self._compose_prompt(account_key, config)
             payment_instruction = self.personas.payment_notice_instruction(message_text)
             if payment_instruction:
                 prompt += "\n\n" + payment_instruction
@@ -355,9 +355,12 @@ class AutoReplyRuntime:
             recipient=recipient,
         )
 
-    def _compose_prompt(self, account_key: str, prompt: str | None) -> str:
+    def _compose_prompt(self, account_key: str, config: dict) -> str:
         return compose_prompt(
-            prompt, self.personas.prompt_fragment(account_key), mode="auto_reply"
+            config.get("reply_prompt"),
+            self.personas.prompt_fragment(account_key),
+            mode="auto_reply",
+            continuation_value=config.get("continuation_prompt"),
         )
 
     async def process_due_replies(self, *, now: float | None = None) -> int:
@@ -416,7 +419,7 @@ class AutoReplyRuntime:
                 if not reply:
                     reply = await self.responder.create_reply(
                         self._compose_prompt(
-                            row["account_key"], config.get("reply_prompt")
+                            row["account_key"], config
                         )
                         + "\n\n"
                         + self.personas.reply_mode_instruction(

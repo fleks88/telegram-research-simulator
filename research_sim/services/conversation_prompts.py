@@ -32,6 +32,24 @@ def shared_prompt(value: str | None) -> str:
     return (value or "").strip() or DEFAULT_REPLY_PROMPT
 
 
-def compose_prompt(value: str | None, persona_fragment: str, *, mode: str) -> str:
-    instructions = {"auto_reply": AUTO_REPLY_INSTRUCTION, "activation": ACTIVATION_INSTRUCTION}
+def activation_prompt(value: str | None) -> str:
+    return (value or "").strip() or ACTIVATION_INSTRUCTION
+
+
+def continuation_prompt(value: str | None) -> str:
+    return (value or "").strip() or AUTO_REPLY_INSTRUCTION
+
+
+def compose_prompt(
+    value: str | None,
+    persona_fragment: str,
+    *,
+    mode: str,
+    activation_value: str | None = None,
+    continuation_value: str | None = None,
+) -> str:
+    instructions = {
+        "auto_reply": continuation_prompt(continuation_value),
+        "activation": activation_prompt(activation_value),
+    }
     return "\n\n".join((shared_prompt(value), persona_fragment, instructions[mode]))

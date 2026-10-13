@@ -26,7 +26,14 @@ from telegram.ext import (
 
 from .client import ApiClient
 from ..settings import normalize_username
-from ..services.conversation_prompts import DEFAULT_REPLY_PROMPT, shared_prompt
+from ..services.conversation_prompts import (
+    ACTIVATION_INSTRUCTION,
+    AUTO_REPLY_INSTRUCTION,
+    DEFAULT_REPLY_PROMPT,
+    activation_prompt,
+    continuation_prompt,
+    shared_prompt,
+)
 
 
 LOGGER = logging.getLogger(__name__)
@@ -56,6 +63,8 @@ MANUAL_REPLY = 30
 TELEGRAM_PROFILE_NAME = 31
 TELEGRAM_PROFILE_USERNAME = 32
 TELEGRAM_PROFILE_AVATAR = 33
+EDIT_ACTIVATION_PROMPT = 34
+EDIT_CONTINUATION_PROMPT = 35
 ACCOUNT_KEY_PATTERN = re.compile(r"^[a-zA-Z0-9_-]{1,48}$")
 PACK_SIZES = {8100, 3650, 1800, 660, 325, 60}
 TRAITS = [
@@ -176,8 +185,8 @@ def parse_admin_ids(value: str) -> Set[int]:
         admin_ids = {int(item.strip()) for item in value.split(",") if item.strip()}
     except ValueError as exc:
         raise ValueError("CONTROL_ADMIN_IDS must be comma-separated Telegram user IDs") from exc
-    if not admin_ids or any(item <= 0 for item in admin_ids):
-        raise ValueError("CONTROL_ADMIN_IDS must contain at least one positive user ID")
+    if any(item <= 0 for item in admin_ids):
+        raise ValueError("CONTROL_ADMIN_IDS must contain only positive user IDs")
     return admin_ids
 
 
@@ -281,11 +290,10 @@ def _api(context: ContextTypes.DEFAULT_TYPE) -> ApiClient:
 
 
 def _is_authorized(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
-    user = update.effective_user
-    return is_admin(
-        user.id if user else None,
-        context.application.bot_data["admin_ids"],
-    )
+    # The control panel is intentionally public to every Telegram user who can
+    # open the bot. CONTROL_ADMIN_IDS is retained only as the recipient list for
+    # proactive manual-dialog notifications.
+    return update.effective_user is not None
 
 
 async def _deny(update: Update) -> None:
@@ -337,7 +345,9 @@ async def whoami(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if user is not None and update.effective_message is not None:
         await update.effective_message.reply_text(
             f"Ваш Telegram user ID: {user.id}\n"
-            "Добавьте это число в CONTROL_ADMIN_IDS на сервере бота."
+            "Доступ к панели открыт всем. Добавьте ID в CONTROL_ADMIN_IDS, "
+            "только если этому пользователю нужны автоматические уведомления "
+            "о ручных диалогах."
         )
 
 
@@ -921,12 +931,17 @@ async def show_campaign(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         text += f"\n… и ещё {len(config['phrases']) - 10}"
     prompt = config.get("reply_prompt")
     if prompt:
-        text += "\n\nPrompt:\n" + (prompt[:2500] + ("…" if len(prompt) > 2500 else ""))
+        text += "\n\nОбщий системный prompt:\n" + (
+            prompt[:1800] + ("…" if len(prompt) > 1800 else "")
+        )
     await _reply(
         update,
         text[:3900],
         reply_markup=InlineKeyboardMarkup([
-            [InlineKeyboardButton("⚙️ Изменить шаблоны и prompt", callback_data="flow:campaign")],
+            [InlineKeyboardButton("🧩 Общий системный prompt", callback_data="flow:reply_prompt")],
+            [InlineKeyboardButton("⚡ Prompt первого сообщения", callback_data="flow:activation_prompt")],
+            [InlineKeyboardButton("💬 Prompt продолжения диалога", callback_data="flow:continuation_prompt")],
+            [InlineKeyboardButton("📝 Изменить шаблоны", callback_data="flow:campaign")],
             [InlineKeyboardButton("👥 Изменить получателя", callback_data="flow:recipient")],
             [InlineKeyboardButton("← Главное меню", callback_data="menu:home")],
         ]),
@@ -1125,7 +1140,7 @@ async def show_auto_reply_menu(update: Update, context: ContextTypes.DEFAULT_TYP
         text,
         reply_markup=InlineKeyboardMarkup([
             [InlineKeyboardButton(toggle_label, callback_data=toggle)],
-            [InlineKeyboardButton("✏️ Изменить общий промпт", callback_data="flow:reply_prompt")],
+            [InlineKeyboardButton("✏️ Prompt продолжения диалога", callback_data="flow:continuation_prompt")],
             [InlineKeyboardButton("⏱ Изменить задержку", callback_data="flow:reply_delay")],
             [InlineKeyboardButton("👥 Изменить получателя", callback_data="flow:recipient")],
             [InlineKeyboardButton("← Главное меню", callback_data="menu:home")],
@@ -1152,7 +1167,7 @@ async def show_activation_menu(update: Update, context: ContextTypes.DEFAULT_TYP
         reply_markup=InlineKeyboardMarkup([
             [InlineKeyboardButton("⏸ Выключить" if enabled else "▶️ Включить", callback_data="activation:disable" if enabled else "activation:enable")],
             [InlineKeyboardButton("🔢 Изменить пороги", callback_data="flow:activation_rules")],
-            [InlineKeyboardButton("✏️ Изменить общий промпт", callback_data="flow:reply_prompt")],
+            [InlineKeyboardButton("✏️ Prompt первого сообщения", callback_data="flow:activation_prompt")],
             [InlineKeyboardButton("🔄 Обновить", callback_data="menu:activation")],
             [InlineKeyboardButton("← Главное меню", callback_data="menu:home")],
         ]),
@@ -1649,10 +1664,10 @@ async def edit_reply_prompt_start(
         await query.edit_message_text(f"Не удалось загрузить промпт: {exc}")
         return ConversationHandler.END
     await query.edit_message_text(
-        "Ниже текущий общий промпт для автоответов и активаций. "
+        "Ниже текущий общий системный промпт для всех сообщений. "
         "Скопируйте его, измените или дополните и отправьте весь текст "
-        "одним сообщением (до 4000 символов). Персона и задача текущего "
-        "режима добавляются автоматически.",
+        "одним сообщением (до 4000 символов). После него автоматически "
+        "добавляются персона аккаунта и редактируемый prompt выбранного режима.",
         reply_markup=InlineKeyboardMarkup([
             [InlineKeyboardButton("Вернуть базовый промпт", callback_data="prompt:reset")],
             [InlineKeyboardButton("Отмена", callback_data="flow:cancel")],
@@ -1679,7 +1694,7 @@ async def edit_reply_prompt_entered(
         await update.effective_message.reply_text(f"Не удалось сохранить промпт: {exc}")
         return ConversationHandler.END
     await update.effective_message.reply_text(
-        "Общий промпт сохранён для автоответов и активаций.", reply_markup=home_keyboard()
+        "Общий системный промпт сохранён.", reply_markup=home_keyboard()
     )
     return ConversationHandler.END
 
@@ -1702,11 +1717,174 @@ async def reset_reply_prompt(
         await query.edit_message_text(f"Не удалось восстановить промпт: {exc}")
         return ConversationHandler.END
     await query.edit_message_text(
-        "Базовый общий промпт восстановлен для автоответов и активаций.",
+        "Базовый общий системный промпт восстановлен.",
         reply_markup=home_keyboard(),
     )
     await update.effective_message.reply_text(DEFAULT_REPLY_PROMPT)
     return ConversationHandler.END
+
+
+async def _edit_mode_prompt_start(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    *,
+    field: str,
+    title: str,
+    current_value: Any,
+    state: int,
+    reset_callback: str,
+) -> int:
+    if not _is_authorized(update, context):
+        await _deny(update)
+        return ConversationHandler.END
+    query = update.callback_query
+    await query.answer()
+    try:
+        campaign = await _api(context).get_campaign()
+        if not campaign:
+            raise RuntimeError("сначала настройте кампанию")
+    except Exception as exc:
+        await query.edit_message_text(f"Не удалось загрузить prompt: {exc}")
+        return ConversationHandler.END
+    await query.edit_message_text(
+        f"Ниже текущий {title}. Скопируйте его, измените и отправьте весь "
+        "текст одним сообщением (до 4000 символов). Это реальная инструкция "
+        "режима: скрытый системный вариант поверх неё больше не добавляется.",
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("Вернуть базовый prompt", callback_data=reset_callback)],
+            [InlineKeyboardButton("Отмена", callback_data="flow:cancel")],
+        ]),
+    )
+    await update.effective_message.reply_text(current_value(campaign.get(field)))
+    return state
+
+
+async def edit_activation_prompt_start(
+    update: Update, context: ContextTypes.DEFAULT_TYPE
+) -> int:
+    return await _edit_mode_prompt_start(
+        update,
+        context,
+        field="activation_prompt",
+        title="prompt первого сообщения после триггера активации",
+        current_value=activation_prompt,
+        state=EDIT_ACTIVATION_PROMPT,
+        reset_callback="prompt:reset_activation",
+    )
+
+
+async def edit_continuation_prompt_start(
+    update: Update, context: ContextTypes.DEFAULT_TYPE
+) -> int:
+    return await _edit_mode_prompt_start(
+        update,
+        context,
+        field="continuation_prompt",
+        title="prompt продолжения диалога",
+        current_value=continuation_prompt,
+        state=EDIT_CONTINUATION_PROMPT,
+        reset_callback="prompt:reset_continuation",
+    )
+
+
+async def _mode_prompt_entered(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    *,
+    field: str,
+    label: str,
+    state: int,
+) -> int:
+    prompt = update.effective_message.text.strip()
+    if not prompt or len(prompt) > 4000:
+        await update.effective_message.reply_text("Нужен непустой prompt до 4000 символов:")
+        return state
+    try:
+        campaign = await _api(context).get_campaign()
+        if not campaign:
+            raise RuntimeError("сначала настройте кампанию")
+        campaign[field] = prompt
+        await _api(context).save_campaign(campaign)
+    except Exception as exc:
+        await update.effective_message.reply_text(f"Не удалось сохранить prompt: {exc}")
+        return ConversationHandler.END
+    await update.effective_message.reply_text(f"{label} сохранён.", reply_markup=home_keyboard())
+    return ConversationHandler.END
+
+
+async def edit_activation_prompt_entered(
+    update: Update, context: ContextTypes.DEFAULT_TYPE
+) -> int:
+    return await _mode_prompt_entered(
+        update,
+        context,
+        field="activation_prompt",
+        label="Prompt первого сообщения",
+        state=EDIT_ACTIVATION_PROMPT,
+    )
+
+
+async def edit_continuation_prompt_entered(
+    update: Update, context: ContextTypes.DEFAULT_TYPE
+) -> int:
+    return await _mode_prompt_entered(
+        update,
+        context,
+        field="continuation_prompt",
+        label="Prompt продолжения диалога",
+        state=EDIT_CONTINUATION_PROMPT,
+    )
+
+
+async def _reset_mode_prompt(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    *,
+    field: str,
+    default: str,
+    label: str,
+) -> int:
+    if not _is_authorized(update, context):
+        await _deny(update)
+        return ConversationHandler.END
+    query = update.callback_query
+    await query.answer()
+    try:
+        campaign = await _api(context).get_campaign()
+        if not campaign:
+            raise RuntimeError("сначала настройте кампанию")
+        campaign[field] = default
+        await _api(context).save_campaign(campaign)
+    except Exception as exc:
+        await query.edit_message_text(f"Не удалось восстановить prompt: {exc}")
+        return ConversationHandler.END
+    await query.edit_message_text(f"{label} восстановлен.", reply_markup=home_keyboard())
+    await update.effective_message.reply_text(default)
+    return ConversationHandler.END
+
+
+async def reset_activation_prompt(
+    update: Update, context: ContextTypes.DEFAULT_TYPE
+) -> int:
+    return await _reset_mode_prompt(
+        update,
+        context,
+        field="activation_prompt",
+        default=ACTIVATION_INSTRUCTION,
+        label="Базовый prompt первого сообщения",
+    )
+
+
+async def reset_continuation_prompt(
+    update: Update, context: ContextTypes.DEFAULT_TYPE
+) -> int:
+    return await _reset_mode_prompt(
+        update,
+        context,
+        field="continuation_prompt",
+        default=AUTO_REPLY_INSTRUCTION,
+        label="Базовый prompt продолжения диалога",
+    )
 
 
 async def edit_reply_delay_start(
@@ -1962,6 +2140,8 @@ async def _save_message_settings(
         "enabled": False,
         "auto_reply_enabled": bool(current.get("auto_reply_enabled", False)),
         "reply_prompt": context.user_data["campaign_reply_prompt"],
+        "activation_prompt": current.get("activation_prompt"),
+        "continuation_prompt": current.get("continuation_prompt"),
         "reply_delay_min_minutes": int(current.get("reply_delay_min_minutes", 2)),
         "reply_delay_max_minutes": int(current.get("reply_delay_max_minutes", 180)),
         "start_date": current.get("start_date", context.user_data["campaign_start_date"]),
@@ -1978,7 +2158,11 @@ async def _save_message_settings(
         await update.effective_message.reply_text(f"Не удалось сохранить настройки: {exc}")
         return ConversationHandler.END
     context.user_data.clear()
-    text = "Шаблоны активаций и общий prompt сохранены. Плановых отправок по времени нет."
+    text = (
+        "Шаблоны активаций и общий системный prompt сохранены. "
+        "Prompt первого сообщения и продолжения диалога не изменялись. "
+        "Плановых отправок по времени нет."
+    )
     if update.callback_query:
         await update.callback_query.edit_message_text(text, reply_markup=home_keyboard())
     else:
@@ -2433,6 +2617,14 @@ def build_application() -> Application:
             CallbackQueryHandler(persona_setup_start, pattern=r"^flow:persona$"),
             CallbackQueryHandler(dialogue_preview_start, pattern=r"^flow:dialogue$"),
             CallbackQueryHandler(edit_reply_prompt_start, pattern=r"^flow:reply_prompt$"),
+            CallbackQueryHandler(
+                edit_activation_prompt_start,
+                pattern=r"^flow:activation_prompt$",
+            ),
+            CallbackQueryHandler(
+                edit_continuation_prompt_start,
+                pattern=r"^flow:continuation_prompt$",
+            ),
             CallbackQueryHandler(edit_reply_delay_start, pattern=r"^flow:reply_delay$"),
             CallbackQueryHandler(edit_activation_rules_start, pattern=r"^flow:activation_rules$"),
             CallbackQueryHandler(edit_recipient_start, pattern=r"^flow:recipient$"),
@@ -2516,6 +2708,26 @@ def build_application() -> Application:
             EDIT_REPLY_PROMPT: [
                 MessageHandler(filters.TEXT & ~filters.COMMAND, edit_reply_prompt_entered),
                 CallbackQueryHandler(reset_reply_prompt, pattern=r"^prompt:reset$"),
+            ],
+            EDIT_ACTIVATION_PROMPT: [
+                MessageHandler(
+                    filters.TEXT & ~filters.COMMAND,
+                    edit_activation_prompt_entered,
+                ),
+                CallbackQueryHandler(
+                    reset_activation_prompt,
+                    pattern=r"^prompt:reset_activation$",
+                ),
+            ],
+            EDIT_CONTINUATION_PROMPT: [
+                MessageHandler(
+                    filters.TEXT & ~filters.COMMAND,
+                    edit_continuation_prompt_entered,
+                ),
+                CallbackQueryHandler(
+                    reset_continuation_prompt,
+                    pattern=r"^prompt:reset_continuation$",
+                ),
             ],
             EDIT_REPLY_DELAY: [MessageHandler(filters.TEXT & ~filters.COMMAND, edit_reply_delay_entered)],
             EDIT_ACTIVATION_RULES: [MessageHandler(filters.TEXT & ~filters.COMMAND, edit_activation_rules_entered)],

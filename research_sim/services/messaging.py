@@ -133,6 +133,9 @@ class MessagingService:
                             campaign.config.get("reply_prompt") if campaign else None,
                             self.personas.prompt_fragment(sender_account.account_key),
                             mode="activation",
+                            activation_value=(
+                                campaign.config.get("activation_prompt") if campaign else None
+                            ),
                         ),
                         text=message,
                         word_accuracy_percent=persona["word_accuracy_percent"],

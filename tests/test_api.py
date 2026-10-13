@@ -749,8 +749,14 @@ class ApiTest(unittest.TestCase):
             json=missing_prompt,
         )
         self.assertEqual(response.status_code, 200)
-        from research_sim.services.conversation_prompts import DEFAULT_REPLY_PROMPT
+        from research_sim.services.conversation_prompts import (
+            ACTIVATION_INSTRUCTION,
+            AUTO_REPLY_INSTRUCTION,
+            DEFAULT_REPLY_PROMPT,
+        )
         self.assertEqual(response.json()["reply_prompt"], DEFAULT_REPLY_PROMPT)
+        self.assertEqual(response.json()["activation_prompt"], ACTIVATION_INSTRUCTION)
+        self.assertEqual(response.json()["continuation_prompt"], AUTO_REPLY_INSTRUCTION)
         loaded = self.client.get("/api/v1/settings/campaign", headers=self.auth)
         self.assertEqual(loaded.json()["reply_prompt"], DEFAULT_REPLY_PROMPT)
 

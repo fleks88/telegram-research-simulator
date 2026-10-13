@@ -132,6 +132,8 @@ class CampaignSettingsPayload(BaseModel):
     day_slots: Dict[int, List[str]]
     auto_reply_enabled: bool = False
     reply_prompt: Optional[str] = Field(default=None, max_length=4000)
+    activation_prompt: Optional[str] = Field(default=None, max_length=4000)
+    continuation_prompt: Optional[str] = Field(default=None, max_length=4000)
     reply_delay_min_minutes: int = Field(default=2, ge=0, le=1440)
     reply_delay_max_minutes: int = Field(default=180, ge=0, le=1440)
     activation_enabled: bool = False

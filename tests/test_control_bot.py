@@ -11,6 +11,7 @@ from telegram.error import BadRequest, NetworkError
 
 from research_sim.bot.app import (
     _reply,
+    _is_authorized,
     bot_error_handler,
     format_activation_home,
     format_moscow_time,
@@ -55,6 +56,14 @@ class ControlBotHelpersTest(unittest.TestCase):
         self.assertTrue(is_admin(12345, admin_ids))
         self.assertFalse(is_admin(11111, admin_ids))
         self.assertFalse(is_admin(None, admin_ids))
+
+    def test_control_panel_is_available_to_every_telegram_user(self) -> None:
+        update = SimpleNamespace(effective_user=SimpleNamespace(id=11111))
+        context = SimpleNamespace(
+            application=SimpleNamespace(bot_data={"admin_ids": {12345}})
+        )
+        self.assertTrue(_is_authorized(update, context))
+        self.assertEqual(parse_admin_ids(""), set())
 
     def test_telegram_profile_name_parser_supports_optional_last_name(self) -> None:
         self.assertEqual(parse_telegram_profile_name("Иван | Петров"), ("Иван", "Петров"))
