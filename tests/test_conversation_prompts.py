@@ -19,13 +19,26 @@ from research_sim.database import Database, DatabaseRequests
 from research_sim.services.auto_reply import AutoReplyRuntime
 from research_sim.services.campaign import CampaignService
 from research_sim.services.conversation_prompts import (
-    DEFAULT_REPLY_PROMPT, AUTO_REPLY_INSTRUCTION, ACTIVATION_INSTRUCTION,
+    DEFAULT_REPLY_PROMPT,
+    AUTO_REPLY_INSTRUCTION,
+    ACTIVATION_INSTRUCTION,
+    LEGACY_ACTIVATION_INSTRUCTION,
+    activation_prompt,
 )
 from research_sim.services.messaging import MessagingService
 from research_sim.settings import Settings
 
 
 class SharedPromptTest(unittest.IsolatedAsyncioTestCase):
+    def test_legacy_activation_prefix_is_replaced_but_custom_packs_are_kept(self) -> None:
+        saved = LEGACY_ACTIVATION_INSTRUCTION + "\n\nпаки: 1800 3850 8100"
+
+        migrated = activation_prompt(saved)
+
+        self.assertTrue(migrated.startswith(ACTIVATION_INSTRUCTION))
+        self.assertNotIn("сохрани указанное количество", migrated)
+        self.assertIn("паки: 1800 3850 8100", migrated)
+
     async def test_saved_prompt_is_used_by_activation_and_auto_reply(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "shared.sqlite3"
