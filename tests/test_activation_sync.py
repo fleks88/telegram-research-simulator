@@ -42,12 +42,53 @@ class FakeMessaging:
         *,
         apply_persona: bool = False,
         required_offer_uc: Optional[int] = None,
+        activation_trigger: bool = False,
     ) -> Any:
         self.sent.append((recipient, text, apply_persona, required_offer_uc))
+        self.activation_trigger = activation_trigger
         return type("SendResult", (), {"sender_account": "business"})()
 
 
 class ActivationSyncTest(unittest.IsolatedAsyncioTestCase):
+    def test_each_account_can_be_reserved_for_only_one_activation_trigger(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            database = Database(Path(directory) / "activation-accounts.sqlite3")
+            database.initialize()
+            requests = DatabaseRequests(database)
+            for account_key in ("acc1", "acc2", "acc3"):
+                requests.add_sender_account(account_key, account_key)
+
+            first = requests.reserve_next_activation_account()
+            second = requests.reserve_next_activation_account()
+            third = requests.reserve_next_activation_account()
+            exhausted = requests.reserve_next_activation_account()
+
+            self.assertEqual(first.account.account_key, "acc1")
+            self.assertEqual(second.account.account_key, "acc2")
+            self.assertEqual(third.account.account_key, "acc3")
+            self.assertIsNone(exhausted.account)
+            self.assertEqual(exhausted.reason, "no_unused_activation_account")
+            self.assertEqual(
+                requests.get_activation_account_counts(),
+                {"total": 3, "used": 3, "available": 0},
+            )
+
+    def test_existing_rotation_does_not_wrap_activation_back_to_acc1(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            database = Database(Path(directory) / "activation-migration.sqlite3")
+            database.initialize()
+            requests = DatabaseRequests(database)
+            for account_key in ("acc1", "acc2", "acc3"):
+                requests.add_sender_account(account_key, account_key)
+
+            self.assertEqual(
+                requests.reserve_next_sender_account().account.account_key,
+                "acc1",
+            )
+            activation = requests.reserve_next_activation_account()
+
+            self.assertEqual(activation.account.account_key, "acc2")
+
     def test_snapshot_json_is_written_to_info_log(self) -> None:
         with self.assertLogs(
             "research_sim.services.activation_sync",
@@ -196,6 +237,7 @@ class ActivationSyncTest(unittest.IsolatedAsyncioTestCase):
                 True,
                 triggered["offer_uc"],
             )])
+            self.assertTrue(messaging.activation_trigger)
 
             no_repeat = await service.sync_once(
                 now=(first_at + timedelta(minutes=10)).timestamp()

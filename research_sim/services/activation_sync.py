@@ -11,7 +11,11 @@ from zoneinfo import ZoneInfo
 import httpx
 
 from ..database.requests import DatabaseRequests
-from ..services.messaging import MessagingService, SendRateLimitExceeded
+from ..services.messaging import (
+    MessagingService,
+    SenderAccountNotAvailable,
+    SendRateLimitExceeded,
+)
 from ..settings import Settings
 from .campaign import SUPPORTED_PACK_SIZES
 
@@ -309,9 +313,16 @@ class ActivationSyncService:
                 text,
                 apply_persona=True,
                 required_offer_uc=offer_uc,
+                activation_trigger=True,
             )
         except SendRateLimitExceeded:
             return {"status": "rate_limited", "pending": len(state["pending"])}
+        except SenderAccountNotAvailable:
+            LOGGER.warning(
+                "Activation trigger is waiting: every sender account has already "
+                "been used by an activation trigger"
+            )
+            return {"status": "no_unused_accounts", "pending": len(state["pending"])}
         state["pending"].pop(0)
         self.requests.save_activation_sync_state(state)
         return {

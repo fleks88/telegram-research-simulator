@@ -222,6 +222,7 @@ def format_activation_home(data: Dict[str, Any]) -> str:
         and isinstance(item.get("activations_since_previous_sync"), int)
     }
     trigger_counts = data.get("trigger_counts") or {}
+    account_counts = data.get("accounts") or {}
     lines = [
         f"⚡ Активации: {'включены' if enabled else 'выключены'}",
         "За 24ч (+с прошлого опроса) / срабатывания:",
@@ -232,6 +233,12 @@ def format_activation_home(data: Dict[str, Any]) -> str:
         triggered = int(trigger_counts.get(str(pack_size), 0))
         lines.append(f"• {pack_size} UC: {activation_count} (+{delta}) / {triggered}")
     lines.append(f"Очередь: {int(data.get('pending', 0))}")
+    if account_counts:
+        lines.append(
+            "Аккаунты для новых триггеров: "
+            f"{int(account_counts.get('available', 0))} из "
+            f"{int(account_counts.get('total', 0))}"
+        )
     if data.get("last_sync_at") is not None:
         lines.append(f"Обновлено: {format_moscow_time(float(data['last_sync_at']))}")
     lines.append("\nГлавное меню:")
@@ -1157,13 +1164,16 @@ async def show_activation_menu(update: Update, context: ContextTypes.DEFAULT_TYP
     rules = data.get("rules") or {}
     rules_text = ", ".join(f"{pack}×{value}" for pack, value in rules.items()) or "не заданы"
     enabled = bool(data.get("enabled"))
+    account_counts = data.get("accounts") or {}
     await _reply(
         update,
         "⚡ Отправка по активациям\n"
         f"Статус: {'включена' if enabled else 'выключена'}\n"
         f"Endpoint: {'настроен' if data.get('endpoint_configured') else 'не настроен'}\n"
         f"Правила: {rules_text}\n"
-        f"Очередь: {data.get('pending', 0)}",
+        f"Очередь: {data.get('pending', 0)}\n"
+        "Аккаунты для новых триггеров: "
+        f"{account_counts.get('available', 0)} из {account_counts.get('total', 0)}",
         reply_markup=InlineKeyboardMarkup([
             [InlineKeyboardButton("⏸ Выключить" if enabled else "▶️ Включить", callback_data="activation:disable" if enabled else "activation:enable")],
             [InlineKeyboardButton("🔢 Изменить пороги", callback_data="flow:activation_rules")],

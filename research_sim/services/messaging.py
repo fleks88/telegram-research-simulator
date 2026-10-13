@@ -77,6 +77,7 @@ class MessagingService:
         photo: Optional[bytes] = None,
         apply_persona: bool = False,
         required_offer_uc: Optional[int] = None,
+        activation_trigger: bool = False,
     ) -> SendResult:
         normalized_recipient = self.validate_recipient(recipient)
         message = text.strip()
@@ -108,17 +109,26 @@ class MessagingService:
         delivery_id = reservation.delivery_id
         try:
             if sender_account_index is None:
-                account_reservation = self.requests.reserve_next_sender_account(
-                    excluded_manual_recipient=(
-                        normalized_recipient if required_offer_uc is not None else None
+                if activation_trigger:
+                    account_reservation = self.requests.reserve_next_activation_account(
+                        excluded_manual_recipient=normalized_recipient
                     )
-                )
+                else:
+                    account_reservation = self.requests.reserve_next_sender_account(
+                        excluded_manual_recipient=(
+                            normalized_recipient if required_offer_uc is not None else None
+                        )
+                    )
             else:
                 account_reservation = self.requests.reserve_sender_account_by_index(
                     sender_account_index
                 )
             sender_account = account_reservation.account
             if sender_account is None:
+                if activation_trigger:
+                    raise SenderAccountNotAvailable(
+                        "no unused sender accounts remain for activation triggers"
+                    )
                 if account_reservation.reason == "disabled":
                     raise SenderAccountNotAvailable("selected sender account is disabled")
                 if sender_account_index is not None:

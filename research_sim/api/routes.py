@@ -358,11 +358,13 @@ def get_campaign_settings(request: Request) -> Optional[dict]:
 @protected_router.get("/activations/status")
 def get_activation_status(request: Request) -> dict:
     state = request.app.state.database_requests.get_activation_sync_state() or {}
+    account_counts = request.app.state.database_requests.get_activation_account_counts()
     config = request.app.state.campaign_service.get_settings() or {}
     return {
         "endpoint_configured": bool(request.app.state.settings.pack_activation_endpoint),
         "enabled": bool(config.get("activation_enabled")),
         "rules": config.get("activation_rules", {}),
+        "accounts": account_counts,
         "first_response": state.get("first_response"),
         "last_response": state.get("last_response"),
         "last_sync_at": state.get("last_sync_at"),

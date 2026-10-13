@@ -44,11 +44,13 @@ class ControlBotHelpersTest(unittest.TestCase):
             },
             "trigger_counts": {"8100": 2},
             "pending": 1,
+            "accounts": {"total": 5, "used": 2, "available": 3},
         })
 
         self.assertIn("8100 UC: 12345 (+0) / 2", text)
         self.assertIn("3650 UC: 678 (+0) / 0", text)
         self.assertIn("Очередь: 1", text)
+        self.assertIn("Аккаунты для новых триггеров: 3 из 5", text)
         self.assertIn("12.10.2026 10:00 МСК", text)
 
     def test_only_configured_admin_ids_are_allowed(self) -> None:

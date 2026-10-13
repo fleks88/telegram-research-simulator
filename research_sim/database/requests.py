@@ -747,6 +747,7 @@ class DatabaseRequests:
                 (account_key,),
             )
             for table in (
+                "activation_account_uses",
                 "manual_events",
                 "manual_conversations",
                 "pending_auto_replies",
@@ -839,6 +840,101 @@ class DatabaseRequests:
                 send_count=int(row["send_count"]),
                 last_used_at=row["last_used_at"],
             ))
+
+    def reserve_next_activation_account(
+        self,
+        *,
+        excluded_manual_recipient: Optional[str] = None,
+    ) -> SenderAccountReservation:
+        """Permanently reserve one account for exactly one activation trigger."""
+        with self.database.connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            usage_count = int(
+                connection.execute(
+                    "SELECT COUNT(*) FROM activation_account_uses"
+                ).fetchone()[0]
+            )
+            if usage_count == 0:
+                # Existing installations only stored the last rotation cursor.
+                # Treat every account through that cursor as already consumed,
+                # so deploying this rule cannot wrap back to acc1.
+                rotation = connection.execute(
+                    "SELECT last_account_key FROM account_rotation WHERE id = 1"
+                ).fetchone()
+                last_key = rotation["last_account_key"] if rotation is not None else None
+                if last_key:
+                    last_row = connection.execute(
+                        "SELECT id FROM telegram_accounts WHERE account_key = ?",
+                        (last_key,),
+                    ).fetchone()
+                    if last_row is not None:
+                        connection.execute(
+                            """INSERT OR IGNORE INTO activation_account_uses
+                               (account_key, used_at)
+                               SELECT account_key, ? FROM telegram_accounts WHERE id <= ?""",
+                            (time.time(), last_row["id"]),
+                        )
+            row = connection.execute(
+                """SELECT id, account_key, label, enabled, send_count, last_used_at
+                   FROM telegram_accounts
+                   WHERE enabled = 1
+                     AND NOT EXISTS (
+                         SELECT 1 FROM activation_account_uses
+                         WHERE activation_account_uses.account_key = telegram_accounts.account_key
+                     )
+                     AND (
+                         ? IS NULL OR NOT EXISTS (
+                             SELECT 1 FROM manual_conversations
+                             WHERE manual_conversations.account_key = telegram_accounts.account_key
+                               AND manual_conversations.recipient = ?
+                               AND manual_conversations.active = 1
+                         )
+                     )
+                   ORDER BY id LIMIT 1""",
+                (excluded_manual_recipient, excluded_manual_recipient),
+            ).fetchone()
+            if row is None:
+                return SenderAccountReservation(None, "no_unused_activation_account")
+            connection.execute(
+                "INSERT INTO activation_account_uses (account_key, used_at) VALUES (?, ?)",
+                (row["account_key"], time.time()),
+            )
+            connection.execute(
+                """INSERT INTO account_rotation (id, last_account_key)
+                   VALUES (1, ?)
+                   ON CONFLICT(id) DO UPDATE SET
+                       last_account_key = excluded.last_account_key""",
+                (row["account_key"],),
+            )
+            return SenderAccountReservation(SenderAccount(
+                account_index=int(
+                    connection.execute(
+                        "SELECT COUNT(*) FROM telegram_accounts WHERE id <= ?",
+                        (row["id"],),
+                    ).fetchone()[0]
+                ),
+                account_key=row["account_key"],
+                label=row["label"],
+                enabled=bool(row["enabled"]),
+                send_count=int(row["send_count"]),
+                last_used_at=row["last_used_at"],
+            ))
+
+    def get_activation_account_counts(self) -> Dict[str, int]:
+        with self.database.connect() as connection:
+            row = connection.execute(
+                """SELECT
+                       COUNT(*) AS total,
+                       SUM(CASE WHEN activation_account_uses.account_key IS NOT NULL
+                                THEN 1 ELSE 0 END) AS used
+                   FROM telegram_accounts
+                   LEFT JOIN activation_account_uses
+                     ON activation_account_uses.account_key = telegram_accounts.account_key
+                   WHERE telegram_accounts.enabled = 1"""
+            ).fetchone()
+        total = int(row["total"] or 0)
+        used = int(row["used"] or 0)
+        return {"total": total, "used": used, "available": total - used}
 
     def record_sender_account_success(self, account_key: str) -> None:
         now = time.time()

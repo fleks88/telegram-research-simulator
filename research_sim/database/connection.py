@@ -44,6 +44,11 @@ CREATE TABLE IF NOT EXISTS account_rotation (
     last_account_key TEXT
 );
 
+CREATE TABLE IF NOT EXISTS activation_account_uses (
+    account_key TEXT PRIMARY KEY REFERENCES telegram_accounts(account_key) ON DELETE CASCADE,
+    used_at REAL NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS received_messages (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     account_key TEXT NOT NULL,
