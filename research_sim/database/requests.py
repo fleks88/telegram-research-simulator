@@ -294,6 +294,88 @@ class DatabaseRequests:
             )
             return cursor.rowcount == 1
 
+    def enqueue_debounced_auto_reply(
+        self,
+        *,
+        account_key: str,
+        telegram_message_id: int,
+        due_at: float,
+        reply_text: str,
+        unknown_term: Optional[str] = None,
+        recipient: str = "",
+    ) -> bool:
+        """Keep only the reply for the newest message in an incoming burst."""
+        now = time.time()
+        with self.database.connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            current = connection.execute(
+                """SELECT id, received_at FROM received_messages
+                   WHERE account_key = ? AND telegram_message_id = ?""",
+                (account_key, telegram_message_id),
+            ).fetchone()
+            if current is None:
+                return False
+            newer = connection.execute(
+                """SELECT 1 FROM received_messages
+                   WHERE account_key = ? AND recipient = ?
+                     AND (received_at > ? OR (received_at = ? AND id > ?))
+                   LIMIT 1""",
+                (
+                    account_key,
+                    recipient,
+                    current["received_at"],
+                    current["received_at"],
+                    current["id"],
+                ),
+            ).fetchone()
+            if newer is not None:
+                connection.execute(
+                    """UPDATE received_messages SET reply_status = 'ignored'
+                       WHERE account_key = ? AND telegram_message_id = ?""",
+                    (account_key, telegram_message_id),
+                )
+                return False
+
+            superseded = connection.execute(
+                """SELECT telegram_message_id FROM pending_auto_replies
+                   WHERE account_key = ? AND recipient = ?
+                     AND status IN ('queued', 'processing')""",
+                (account_key, recipient),
+            ).fetchall()
+            if superseded:
+                message_ids = [row["telegram_message_id"] for row in superseded]
+                placeholders = ",".join("?" for _ in message_ids)
+                connection.execute(
+                    f"""UPDATE received_messages SET reply_status = 'ignored'
+                        WHERE account_key = ?
+                          AND telegram_message_id IN ({placeholders})""",
+                    (account_key, *message_ids),
+                )
+                connection.execute(
+                    """UPDATE pending_auto_replies
+                       SET status = 'cancelled', processed_at = ?
+                       WHERE account_key = ? AND recipient = ?
+                         AND status IN ('queued', 'processing')""",
+                    (now, account_key, recipient),
+                )
+
+            cursor = connection.execute(
+                """INSERT OR IGNORE INTO pending_auto_replies
+                   (account_key, telegram_message_id, due_at, reply_text,
+                    unknown_term, recipient, created_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    account_key,
+                    telegram_message_id,
+                    due_at,
+                    reply_text,
+                    unknown_term,
+                    recipient,
+                    now,
+                ),
+            )
+            return cursor.rowcount == 1
+
     def is_manual_conversation_active(
         self,
         account_key: str,
@@ -598,6 +680,15 @@ class DatabaseRequests:
                    WHERE id = ?""",
                 (due_at, queue_id),
             )
+
+    def is_auto_reply_processing(self, queue_id: int) -> bool:
+        with self.database.connect() as connection:
+            row = connection.execute(
+                """SELECT 1 FROM pending_auto_replies
+                   WHERE id = ? AND status = 'processing'""",
+                (queue_id,),
+            ).fetchone()
+        return row is not None
 
     def list_pending_auto_replies(self, *, limit: int = 50) -> list[Dict[str, Any]]:
         with self.database.connect() as connection:

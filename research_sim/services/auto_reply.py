@@ -313,6 +313,12 @@ class AutoReplyRuntime:
                     pending_term = None
 
             prompt = self._compose_prompt(account_key, config)
+            if history and history[-1]["direction"] == "incoming":
+                prompt += (
+                    "\n\nПродавец прислал несколько сообщений подряд до ответа. "
+                    "Считай их одной цельной репликой: учти все сообщения серии и "
+                    "дай один общий ответ, не отвечая на каждое отдельно."
+                )
             if payment_instruction:
                 prompt += "\n\n" + payment_instruction
             prompt += "\n\n" + self.personas.reply_mode_instruction(
@@ -404,7 +410,7 @@ class AutoReplyRuntime:
                 ai_draft=reply,
             )
             return
-        self.requests.enqueue_auto_reply(
+        self.requests.enqueue_debounced_auto_reply(
             account_key=account_key,
             telegram_message_id=int(message.id),
             due_at=time.time() + delay_seconds,
@@ -489,6 +495,8 @@ class AutoReplyRuntime:
                         row["message_text"],
                         history=history,
                     )
+                if not self.requests.is_auto_reply_processing(row["id"]):
+                    continue
                 if self.personas.payment_notice_instruction(row["message_text"]):
                     corrected_reply = self.personas.enforce_payment_failure(
                         reply,
@@ -507,6 +515,8 @@ class AutoReplyRuntime:
                     recipient,
                     typing_seconds=random.randint(6, 11),
                 )
+                if not self.requests.is_auto_reply_processing(row["id"]):
+                    continue
                 await self.messaging.send_message(
                     recipient,
                     reply,

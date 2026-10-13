@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import tempfile
 import unittest
 from pathlib import Path
@@ -273,6 +274,114 @@ class AutoReplyRuntimeTest(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(events[0]["telegram_message_id"], 7)
             self.assertIsNone(events[0]["ai_draft"])
             self.assertEqual(requests.list_pending_auto_replies(), [])
+
+    async def test_message_burst_produces_one_reply_for_the_whole_context(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "burst.sqlite3"
+            database = Database(path)
+            database.initialize()
+            requests = DatabaseRequests(database)
+            requests.add_sender_account("buyer", "Buyer")
+            requests.save_campaign_settings({
+                "auto_reply_enabled": True,
+                "reply_prompt": "Тест покупки UC",
+                "reply_delay_min_minutes": 0,
+                "reply_delay_max_minutes": 0,
+                "recipient": "central_user",
+            })
+            settings = Settings(
+                database_path=path,
+                api_token="token",
+                telegram_api_id=123,
+                telegram_api_hash="hash",
+                telegram_session_dir=Path(directory) / "sessions",
+                allowed_recipients={"central_user"},
+                minimum_send_interval_seconds=0,
+                llm_api_key="test-key",
+            )
+            messaging = FakeMessaging()
+            responder = FakeResponder()
+            runtime = AutoReplyRuntime(
+                settings, requests, FakeReplySender(), messaging, responder,
+            )
+
+            await runtime._handle_message(
+                "buyer", 9001, FakeEvent(20, 9001, "7600₽")
+            )
+            await runtime._handle_message(
+                "buyer", 9001, FakeEvent(21, 9001, "Будешь брать?")
+            )
+            await runtime._handle_message(
+                "buyer", 9001, FakeEvent(22, 9001, "Или передумал?")
+            )
+
+            pending = requests.list_pending_auto_replies()
+            self.assertEqual(len(pending), 1)
+            self.assertEqual(pending[0]["telegram_message_id"], 22)
+            self.assertEqual(
+                [row["message_text"] for row in responder.histories[-1]],
+                ["7600₽", "Будешь брать?"],
+            )
+            await runtime.process_due_replies()
+            self.assertEqual(len(messaging.sent), 1)
+            self.assertIn("Или передумал?", messaging.sent[0][1])
+
+    async def test_slower_old_draft_cannot_replace_newer_burst_reply(self) -> None:
+        class OutOfOrderResponder(FakeResponder):
+            def __init__(self) -> None:
+                super().__init__()
+                self.first_started = asyncio.Event()
+                self.release_first = asyncio.Event()
+
+            async def create_reply(self, prompt, incoming_text, **kwargs):
+                self.histories.append(kwargs.get("history", []))
+                if incoming_text == "первое":
+                    self.first_started.set()
+                    await self.release_first.wait()
+                return "ответ на " + incoming_text
+
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "burst-race.sqlite3"
+            database = Database(path)
+            database.initialize()
+            requests = DatabaseRequests(database)
+            requests.add_sender_account("buyer", "Buyer")
+            requests.save_campaign_settings({
+                "auto_reply_enabled": True,
+                "reply_prompt": "Тест",
+                "reply_delay_min_minutes": 0,
+                "reply_delay_max_minutes": 0,
+                "recipient": "central_user",
+            })
+            settings = Settings(
+                database_path=path,
+                api_token="token",
+                telegram_api_id=123,
+                telegram_api_hash="hash",
+                telegram_session_dir=Path(directory) / "sessions",
+                allowed_recipients={"central_user"},
+                minimum_send_interval_seconds=0,
+                llm_api_key="test-key",
+            )
+            responder = OutOfOrderResponder()
+            runtime = AutoReplyRuntime(
+                settings, requests, FakeReplySender(), FakeMessaging(), responder,
+            )
+
+            old_task = asyncio.create_task(runtime._handle_message(
+                "buyer", 9001, FakeEvent(30, 9001, "первое")
+            ))
+            await responder.first_started.wait()
+            await runtime._handle_message(
+                "buyer", 9001, FakeEvent(31, 9001, "второе")
+            )
+            responder.release_first.set()
+            await old_task
+
+            pending = requests.list_pending_auto_replies()
+            self.assertEqual(len(pending), 1)
+            self.assertEqual(pending[0]["telegram_message_id"], 31)
+            self.assertNotIn("первое", pending[0]["reply_text"])
 
     async def test_payment_notice_is_generated_with_persona_and_history(self) -> None:
         class PaymentResponder:
