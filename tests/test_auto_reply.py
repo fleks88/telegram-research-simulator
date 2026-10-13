@@ -13,9 +13,10 @@ from research_sim.settings import Settings
 
 
 class FakeMessage:
-    def __init__(self, message_id: int, text: str) -> None:
+    def __init__(self, message_id: int, text: str, entities: Any = None) -> None:
         self.id = message_id
         self.message = text
+        self.entities = entities
 
 
 class FakeEvent:
@@ -26,8 +27,9 @@ class FakeEvent:
         text: str,
         *,
         username: str = "central_user",
+        entities: Any = None,
     ) -> None:
-        self.message = FakeMessage(message_id, text)
+        self.message = FakeMessage(message_id, text, entities)
         self.sender_id = sender_id
         self.is_private = True
         self._sender = type(
@@ -41,9 +43,17 @@ class FakeEvent:
 
 
 class FakeListenerClient:
-    def __init__(self) -> None:
+    def __init__(self, recipient_id: int = 1002) -> None:
         self.callback: Any = None
         self.event: Any = None
+        self.recipient_id = recipient_id
+
+    async def get_entity(self, recipient: str) -> Any:
+        return type(
+            "FakeRecipient",
+            (),
+            {"id": self.recipient_id, "username": None},
+        )()
 
     def add_event_handler(self, callback: Any, event: Any) -> None:
         self.callback = callback
@@ -174,7 +184,7 @@ class AutoReplyRuntimeTest(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(len(events), 1)
             self.assertEqual(events[0]["incoming_text"], "manual incoming")
 
-    async def test_listener_filters_incoming_username_without_resolving_entity(self) -> None:
+    async def test_listener_filters_by_resolved_id_when_username_is_missing(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             database = Database(Path(directory) / "listener.sqlite3")
             database.initialize()
@@ -214,12 +224,55 @@ class AutoReplyRuntimeTest(unittest.IsolatedAsyncioTestCase):
                 FakeEvent(1, 1001, "ignore me", username="other_user")
             )
             await sender.client.callback(
-                FakeEvent(2, 1002, "allowed message", username="R_A_F_T")
+                FakeEvent(2, 1002, "allowed message", username="")
             )
 
             pending = requests.list_pending_auto_replies()
             self.assertEqual(len(pending), 1)
             self.assertEqual(pending[0]["telegram_message_id"], 2)
+
+    async def test_any_link_immediately_switches_conversation_to_manual(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "link-manual.sqlite3"
+            database = Database(path)
+            database.initialize()
+            requests = DatabaseRequests(database)
+            requests.add_sender_account("buyer", "Buyer")
+            requests.save_campaign_settings({
+                "auto_reply_enabled": True,
+                "reply_prompt": "Тест покупки UC",
+                "reply_delay_min_minutes": 0,
+                "reply_delay_max_minutes": 0,
+                "recipient": "central_user",
+            })
+            settings = Settings(
+                database_path=path,
+                api_token="token",
+                telegram_api_id=123,
+                telegram_api_hash="hash",
+                telegram_session_dir=Path(directory) / "sessions",
+                allowed_recipients={"central_user"},
+                minimum_send_interval_seconds=0,
+                llm_api_key="test-key",
+            )
+            runtime = AutoReplyRuntime(
+                settings, requests, FakeReplySender(), FakeMessaging(), FakeResponder(),
+            )
+
+            await runtime._handle_message(
+                "buyer",
+                9001,
+                FakeEvent(7, 9001, "Посмотри example.com/catalog"),
+            )
+
+            self.assertTrue(
+                requests.is_manual_conversation_active("buyer", "central_user")
+            )
+            events = requests.list_manual_events_for_operator(101)
+            self.assertEqual(len(events), 1)
+            self.assertEqual(events[0]["telegram_message_id"], 7)
+            self.assertIsNone(events[0]["ai_draft"])
+            self.assertEqual(requests.list_pending_auto_replies(), [])
 
     async def test_payment_notice_is_generated_with_persona_and_history(self) -> None:
         class PaymentResponder:

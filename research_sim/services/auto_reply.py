@@ -117,13 +117,44 @@ class AutoReplyRuntime:
         for account_key in accounts - set(self._handlers):
             try:
                 client = await self.sender.connect_session(account_key)
+                expected_sender_id: int | None = None
+                try:
+                    peer = await asyncio.wait_for(
+                        client.get_entity("@" + recipient),
+                        timeout=15,
+                    )
+                    expected_sender_id = int(peer.id)
+                    self._central_sender_ids[account_key] = expected_sender_id
+                except Exception as exc:
+                    LOGGER.warning(
+                        "Could not resolve recipient @%s for %s; falling back to username: %s",
+                        recipient,
+                        account_key,
+                        exc,
+                    )
 
                 async def handle_message(
                     event: Any,
                     key: str = account_key,
                     allowed_recipient: str = recipient,
+                    allowed_sender_id: int | None = expected_sender_id,
                 ) -> None:
                     if getattr(event, "is_private", True) is not True:
+                        return
+                    raw_sender_id = getattr(event, "sender_id", None)
+                    try:
+                        sender_id = int(raw_sender_id)
+                    except (TypeError, ValueError):
+                        return
+                    if allowed_sender_id is not None:
+                        if sender_id != allowed_sender_id:
+                            return
+                        await self._handle_message(
+                            key,
+                            allowed_sender_id,
+                            event,
+                            recipient=allowed_recipient,
+                        )
                         return
                     try:
                         sender = await event.get_sender()
@@ -203,6 +234,12 @@ class AutoReplyRuntime:
         if not claimed:
             return
 
+        payment_instruction = self.personas.payment_notice_instruction(message_text)
+        has_link = self.personas.contains_link(
+            message_text,
+            getattr(message, "entities", None),
+        )
+
         if self.requests.is_manual_conversation_active(account_key, recipient):
             self.requests.create_manual_event(
                 account_key=account_key,
@@ -211,6 +248,21 @@ class AutoReplyRuntime:
                 incoming_text=message_text,
             )
             return
+
+        if has_link:
+            self.requests.activate_manual_conversation(
+                account_key=account_key,
+                recipient=recipient,
+                telegram_message_id=int(message.id),
+            )
+            if not payment_instruction or not config.get("auto_reply_enabled"):
+                self.requests.create_manual_event(
+                    account_key=account_key,
+                    recipient=recipient,
+                    telegram_message_id=int(message.id),
+                    incoming_text=message_text,
+                )
+                return
 
         if not (
             config.get("auto_reply_enabled")
@@ -261,7 +313,6 @@ class AutoReplyRuntime:
                     pending_term = None
 
             prompt = self._compose_prompt(account_key, config)
-            payment_instruction = self.personas.payment_notice_instruction(message_text)
             if payment_instruction:
                 prompt += "\n\n" + payment_instruction
             prompt += "\n\n" + self.personas.reply_mode_instruction(
@@ -331,6 +382,13 @@ class AutoReplyRuntime:
                 "failed",
             )
             LOGGER.exception("Could not prepare automatic reply for %s", account_key)
+            if has_link:
+                self.requests.create_manual_event(
+                    account_key=account_key,
+                    recipient=recipient,
+                    telegram_message_id=int(message.id),
+                    incoming_text=message_text,
+                )
             return
         if payment_instruction:
             self.requests.activate_manual_conversation(
@@ -382,7 +440,10 @@ class AutoReplyRuntime:
                     row["account_key"], row["telegram_message_id"], "ignored"
                 )
                 continue
-            if self.personas.payment_notice_instruction(row["message_text"]):
+            payment_instruction = self.personas.payment_notice_instruction(
+                row["message_text"]
+            )
+            if self.personas.contains_link(row["message_text"]) or payment_instruction:
                 self.requests.activate_manual_conversation(
                     account_key=row["account_key"],
                     recipient=row["recipient"],
@@ -393,7 +454,7 @@ class AutoReplyRuntime:
                     recipient=row["recipient"],
                     telegram_message_id=row["telegram_message_id"],
                     incoming_text=row["message_text"],
-                    ai_draft=row.get("reply_text"),
+                    ai_draft=row.get("reply_text") if payment_instruction else None,
                 )
                 self.requests.finish_auto_reply(row["id"], status="cancelled")
                 continue

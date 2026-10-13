@@ -14,6 +14,15 @@ WORD_PATTERN = re.compile(r"[A-Za-zА-Яа-яЁё]{4,}")
 PUNCTUATION_PATTERN = re.compile(r"[,;:!?\.]")
 CYRILLIC_LETTERS = "абвгдежзийклмнопрстуфхцчшщыэюя"
 PAYMENT_NOTICE_MARKERS = ("заявк", "сумм")
+LINK_PATTERN = re.compile(
+    r"(?ix)(?:"
+    r"(?:https?|tg)://[^\s<>]+"
+    r"|www\.[^\s<>]+"
+    r"|(?:t|telegram)\.me/[^\s<>]+"
+    r"|(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+"
+    r"[a-z]{2,24}(?:/[^\s<>]*)?"
+    r")"
+)
 PUBG_DOMAIN_CONTEXT = """Предметный контекст разговора:
 - UC («юц») — внутриигровая валюта PUBG.
 - «Вход», «по входу», «UC по/через входу» — продавец входит в PUBG-аккаунт покупателя и пополняет UC через игровой клиент. Вход бывает по QR-коду либо по почте и коду.
@@ -541,3 +550,19 @@ class PersonaService:
             "Не повторяй формулировки своих недавних сообщений. Не придумывай "
             "предупреждение о мошенничестве, если его нет в сообщении или истории."
         )
+
+    @staticmethod
+    def contains_link(incoming_text: str, entities: Any = None) -> bool:
+        """Recognize visible URLs and Telegram text-link entities."""
+        if LINK_PATTERN.search(incoming_text):
+            return True
+        for entity in entities or ():
+            if getattr(entity, "url", None):
+                return True
+            if entity.__class__.__name__ in {
+                "MessageEntityUrl",
+                "MessageEntityTextUrl",
+                "MessageEntityEmail",
+            }:
+                return True
+        return False
